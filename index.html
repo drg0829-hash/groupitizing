@@ -60,7 +60,7 @@
       padding: 0 10px;
       border-bottom: 2px solid #222;
       font-weight: bold;
-      letter-spacing: 3px;
+      letter-spacing: 1px;
     }
 
     .response-hint {
@@ -95,7 +95,7 @@
    * =========================================
    */
 
-  const EXPERIMENT_VERSION = "1.3.0";
+  const EXPERIMENT_VERSION = "1.6.0";
 
   const CANVAS_WIDTH = 960;
   const CANVAS_HEIGHT = 540;
@@ -104,7 +104,6 @@
 
   /*
    * 점 중심 사이의 최소 거리.
-   * 22 -> 25로 상향.
    * 점 지름이 14이므로 가장자리 사이
    * 최소 간격은 11px이 된다.
    */
@@ -113,7 +112,7 @@
   const MARGIN = 20;
 
   const FIXATION_DURATION = 1000;
-  const RESPONSE_DEADLINE = 6000;
+  const RESPONSE_DEADLINE = 4000;
 
   const BLOCK_COUNT = 5;
   const TRIALS_PER_BLOCK = 80;
@@ -123,15 +122,13 @@
    * 1-1. 점 개수 범위
    * =========================================
    *
-   * 색깔당 6–9 (전체 12–18)에서
-   * 색깔당 5–8 (전체 10–16)로 변경.
-   *
-   * 여기 두 값만 바꾸면 조합표, 응답 범위,
-   * 안내문이 모두 함께 따라간다.
+   * 색깔당 3–6개, 전체 최대 11개.
+   * 두 색 모두 6개인 [6, 6] = 12는 제외된다.
+   * 전체 개수는 6–11 사이에서 나온다.
    */
 
-  const GROUP_SIZE_MIN = 5;
-  const GROUP_SIZE_MAX = 8;
+  const GROUP_SIZE_MIN = 3;
+  const GROUP_SIZE_MAX = 6;
 
   const GROUP_SIZES = [];
 
@@ -146,8 +143,7 @@
   const TOTAL_MIN =
     GROUP_SIZE_MIN * 2;
 
-  const TOTAL_MAX =
-    GROUP_SIZE_MAX * 2;
+  const TOTAL_MAX = 12;
 
   const TOTAL_COUNT =
     TOTAL_MAX - TOTAL_MIN + 1;
@@ -164,19 +160,13 @@
    * =========================================
    *
    * "uniform_group_size"
-   *   각 색의 점 개수(5,6,7,8)가
+   *   각 색의 점 개수(3–6)가
    *   비복원 추출로 정확히 같은 횟수씩 등장.
-   *   -> 색깔별 개수는 균일,
-   *      전체 개수는 삼각 분포(13에서 최빈).
+   *   합이 11을 넘는 조합은 다시 섞어서 제외.
    *
    * "uniform_total"
-   *   전체 개수(10–16)가
+   *   전체 개수(6–11)가
    *   비복원 추출로 거의 같은 횟수씩 등장.
-   *   -> 전체 개수는 균일,
-   *      색깔별 개수는 가장자리(5, 8)가 적어짐.
-   *
-   * subitizing 가설은 색깔별 개수에 대한
-   * 예측이므로 기본값은 group size 균일.
    */
   const COUNT_SAMPLING = "uniform_group_size";
 
@@ -220,6 +210,12 @@
     "signed_error",
     "absolute_error",
     "rt",
+    "chunks",
+    "n_chunks",
+    "chunk_times",
+    "first_chunk_rt",
+    "undo_count",
+    "partial_response",
     "color_a_rgb",
     "color_b_rgb",
     "time_elapsed"
@@ -297,6 +293,15 @@
 
   function rgbToCss(rgb) {
     return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+  }
+
+  function sumOf(values) {
+    return values.reduce(
+      function (total, value) {
+        return total + value;
+      },
+      0
+    );
   }
 
   /*
@@ -588,17 +593,13 @@
    * 7. 전체 개수별 가능한 그룹 조합
    * =========================================
    *
-   * GROUP_SIZE_MIN–GROUP_SIZE_MAX 범위에서
-   * 자동으로 생성한다.
-   *
-   * 현재 설정(5–8)에서는
-   *   10: [5,5]
+   * 현재 설정(색깔당 3–6, 합 ≤ 11)에서는
+   *    6: [3,3]
+   *    7: [3,4] [4,3]
+   *    8: [3,5] [4,4] [5,3]
+   *    9: [3,6] [4,5] [5,4] [6,3]
+   *   10: [4,6] [5,5] [6,4]
    *   11: [5,6] [6,5]
-   *   12: [5,7] [6,6] [7,5]
-   *   13: [5,8] [6,7] [7,6] [8,5]
-   *   14: [6,8] [7,7] [8,6]
-   *   15: [7,8] [8,7]
-   *   16: [8,8]
    */
 
   const VALID_GROUP_PAIRS = {};
@@ -1126,14 +1127,16 @@
    * 17-a. 색깔별 개수 균일 추출
    * =========================================
    *
-   * 5, 6, 7, 8을 각각 정확히
+   * 3, 4, 5, 6을 각각 정확히
    * TRIALS_PER_CONDITION / 4 = 5회씩
-   * A와 B에 대해 독립적으로 섞는다.
+   * A와 B에 대해 섞는다.
    *
-   * 조건당 A에서 각 개수 5회,
-   * 전체 400 trials 기준으로는
-   * A에서 각 개수 100회
-   * (= 100 trials당 25회)씩 등장한다.
+   * 짝지은 결과 중 합이 TOTAL_MAX를 넘는
+   * 조합([6,6])이 하나라도 있으면
+   * B를 다시 섞는다.
+   *
+   * 전체 400 trials 기준으로
+   * 색깔별로 각 개수가 정확히 200회씩 등장한다.
    */
 
   function buildPairsUniformGroupSize() {
@@ -1168,18 +1171,39 @@
         sizesA
       );
 
-    const shuffledB =
-      jsPsych.randomization.shuffle(
-        sizesB
-      );
+    const maximumAttempts = 10000;
 
-    return shuffledA.map(
-      function (sizeA, index) {
-        return [
-          sizeA,
-          shuffledB[index]
-        ];
+    for (
+      let attempt = 0;
+      attempt < maximumAttempts;
+      attempt++
+    ) {
+      const shuffledB =
+        jsPsych.randomization.shuffle(
+          sizesB
+        );
+
+      const allWithinLimit =
+        shuffledA.every(
+          function (sizeA, index) {
+            return sizeA + shuffledB[index] <= TOTAL_MAX;
+          }
+        );
+
+      if (allWithinLimit) {
+        return shuffledA.map(
+          function (sizeA, index) {
+            return [
+              sizeA,
+              shuffledB[index]
+            ];
+          }
+        );
       }
+    }
+
+    throw new Error(
+      "합이 TOTAL_MAX 이하인 조합을 만들지 못했습니다."
     );
   }
 
@@ -1188,8 +1212,8 @@
    * 17-b. 전체 개수 균일 추출
    * =========================================
    *
-   * 10–16을 각각 3회 넣으면 21회가 되므로
-   * 조건마다 하나의 total을 순환 제거하여
+   * 6–11을 각각 4회 넣으면 24회가 되므로
+   * 조건마다 4개의 total을 순환 제거하여
    * TRIALS_PER_CONDITION에 맞춘다.
    */
 
@@ -1281,7 +1305,7 @@
      * A-left와 A-right를
      * 조건마다 절반씩 배치한다.
      */
-        const half =
+    const half =
       Math.floor(TRIALS_PER_CONDITION / 2);
 
     const sideAssignments =
@@ -1478,6 +1502,11 @@
    * =========================================
    * 20. 점 판단 trial 생성
    * =========================================
+   *
+   * 응답 방식: 한눈에 알아본 덩어리마다
+   * 그 개수를 숫자 키(1–9)로 누른다.
+   * 예) 3, 4, 3 -> 3 + 4 + 3 = 10
+   * Enter를 누르면 합계가 응답으로 제출된다.
    */
 
   function makeCountingNode(
@@ -1500,7 +1529,10 @@
     let displayedWidth = null;
     let displayedHeight = null;
 
-    let typedResponse = "";
+    let chunks = [];
+    let chunkTimes = [];
+    let undoCount = 0;
+
     let activeKeyHandler = null;
     let trialResult = null;
 
@@ -1518,7 +1550,9 @@
         stimulus =
           generateStimulus(spec);
 
-        typedResponse = "";
+        chunks = [];
+        chunkTimes = [];
+        undoCount = 0;
 
         return `
           <div class="trial-wrap">
@@ -1530,16 +1564,17 @@
             ></canvas>
 
             <div class="response-line">
-              응답:
+              입력:
               <span
                 id="${responseId}"
                 class="response-box"
-              >__</span>
+              >0</span>
             </div>
 
             <div class="response-hint">
-              ${TOTAL_MIN}–${TOTAL_MAX} 사이의 숫자를 입력하고
+              한눈에 알아본 개수를 숫자 키로 차례로 누르고
               <kbd>Enter</kbd>를 누르세요.
+              마지막 입력 취소는 <kbd>Backspace</kbd>.
             </div>
 
             <div
@@ -1664,6 +1699,21 @@
           rectangle.height;
 
         /*
+         * 입력 현황을 "3 + 4 + 3 = 10" 형태로 표시
+         */
+        function renderResponse() {
+          if (chunks.length === 0) {
+            responseElement.textContent = "0";
+            return;
+          }
+
+          responseElement.textContent =
+            chunks.join(" + ") +
+            " = " +
+            sumOf(chunks);
+        }
+
+        /*
          * 실제 점이 그려진 직후부터
          * RT 측정을 시작한다.
          */
@@ -1673,25 +1723,28 @@
         activeKeyHandler =
           function (event) {
             /*
-             * 숫자 입력
+             * 숫자 키(1–9): 덩어리 하나 추가
+             * 꾹 누르고 있어도 한 번만 센다.
              */
-            if (
-              /^[0-9]$/.test(
-                event.key
-              )
-            ) {
+            if (/^[1-9]$/.test(event.key)) {
               event.preventDefault();
 
-              if (typedResponse.length < 2) {
-                typedResponse +=
-                  event.key;
+              if (event.repeat) {
+                return;
               }
 
-              responseElement.textContent =
-                typedResponse.padEnd(
-                  2,
-                  "_"
-                );
+              chunks.push(
+                Number(event.key)
+              );
+
+              chunkTimes.push(
+                Math.round(
+                  performance.now() -
+                  stimulusOnset
+                )
+              );
+
+              renderResponse();
 
               errorElement.textContent =
                 "";
@@ -1700,25 +1753,22 @@
             }
 
             /*
-             * 입력 삭제
+             * Backspace: 마지막 덩어리 취소
              */
-            if (
-              event.key ===
-              "Backspace"
-            ) {
+            if (event.key === "Backspace") {
               event.preventDefault();
 
-              typedResponse =
-                typedResponse.slice(
-                  0,
-                  -1
-                );
+              if (event.repeat) {
+                return;
+              }
 
-              responseElement.textContent =
-                typedResponse.padEnd(
-                  2,
-                  "_"
-                );
+              if (chunks.length > 0) {
+                chunks.pop();
+                chunkTimes.pop();
+                undoCount += 1;
+              }
+
+              renderResponse();
 
               errorElement.textContent =
                 "";
@@ -1727,39 +1777,26 @@
             }
 
             /*
-             * Enter로 응답 제출
+             * Enter: 합계 제출
              */
-            if (
-              event.key ===
-              "Enter"
-            ) {
+            if (event.key === "Enter") {
               event.preventDefault();
 
-              const estimate =
-                Number(
-                  typedResponse
-                );
-
-              const validResponse =
-                typedResponse.length > 0 &&
-                estimate >= TOTAL_MIN &&
-                estimate <= TOTAL_MAX;
-
-              if (validResponse) {
+              if (chunks.length > 0) {
                 const responseTime =
                   performance.now() -
                   stimulusOnset;
 
                 jsPsych.finishTrial({
                   response:
-                    typedResponse,
+                    sumOf(chunks),
 
                   rt:
                     responseTime
                 });
               } else {
                 errorElement.textContent =
-                  `${TOTAL_MIN}부터 ${TOTAL_MAX} 사이의 숫자를 입력해 주세요.`;
+                  "알아본 개수를 숫자 키로 누른 뒤 Enter를 누르세요.";
               }
             }
           };
@@ -1781,27 +1818,24 @@
           );
         }
 
-        const responseText =
+        const estimate =
           data.response === null ||
           data.response === undefined
             ? null
-            : String(
-                data.response
-              );
-
-        const estimate =
-          responseText === null
-            ? null
             : Number(
-                responseText
+                data.response
               );
 
         data.estimate =
           estimate;
 
+        /*
+         * 시간 초과 시 그때까지 입력한 합계
+         */
         data.partial_response =
-          typedResponse ||
-          null;
+          estimate === null && chunks.length > 0
+            ? sumOf(chunks)
+            : null;
 
         data.responded =
           estimate !== null;
@@ -1831,6 +1865,31 @@
 
         data.rt_stimulus_ms =
           data.rt;
+
+        /*
+         * 덩어리 기록
+         *   chunks: 누른 숫자들, 예) [3,4,3]
+         *   n_chunks: 덩어리 개수
+         *   chunk_times: 자극 제시 후 각 숫자를 누른 시점(ms)
+         *   first_chunk_rt: 첫 숫자까지 걸린 시간
+         *   undo_count: Backspace로 취소한 횟수
+         */
+        data.chunks =
+          JSON.stringify(chunks);
+
+        data.n_chunks =
+          chunks.length;
+
+        data.chunk_times =
+          JSON.stringify(chunkTimes);
+
+        data.first_chunk_rt =
+          chunkTimes.length > 0
+            ? chunkTimes[0]
+            : null;
+
+        data.undo_count =
+          undoCount;
 
         /*
          * 자극 생성 정보
@@ -2141,24 +2200,31 @@
 
         <p>
           점의 색과 관계없이
-          <strong>전체 점 개수</strong>를
-          판단하세요.
+          <strong>모든 점</strong>의 개수를 세어 주세요.
+        </p>
+
+        <p>
+          한눈에 알아본 점 개수를
+          숫자 키로 차례로 누르세요.
+          예를 들어 3개, 4개, 3개로 보였다면
+          <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd>을 누르면
+          합계 10이 자동으로 계산됩니다.
+        </p>
+
+        <p>
+          다 눌렀으면 <kbd>Enter</kbd>를 누르세요.
+          합계가 응답으로 제출됩니다.
+        </p>
+
+        <p>
+          잘못 눌렀으면
+          <kbd>Backspace</kbd>로
+          마지막 입력을 취소할 수 있습니다.
         </p>
 
         <p>
           전체 점 개수는
           ${TOTAL_MIN}개부터 ${TOTAL_MAX}개 사이입니다.
-        </p>
-
-        <p>
-          숫자 키로 두 자리 숫자를 입력한 뒤
-          <kbd>Enter</kbd>를 누르세요.
-        </p>
-
-        <p>
-          잘못 입력한 경우
-          <kbd>Backspace</kbd>로
-          지울 수 있습니다.
         </p>
 
         <p>
@@ -2194,8 +2260,8 @@
    * 24. 연습 시행
    * =========================================
    *
-   * 색깔별 개수는 5–8,
-   * 전체 개수는 10–16 범위에 맞춘다.
+   * 색깔별 개수는 3–6,
+   * 전체 개수는 6–11 범위에 맞춘다.
    */
 
   const practiceSpecs = [
@@ -2210,9 +2276,9 @@
       space_level: 1,
 
       group_a_size: 6,
-      group_b_size: 6,
+      group_b_size: 5,
 
-      total_dots: 12,
+      total_dots: 11,
 
       side_assignment:
         "A_left"
@@ -2228,10 +2294,10 @@
       color_level: 5,
       space_level: 4,
 
-      group_a_size: 8,
-      group_b_size: 8,
+      group_a_size: 4,
+      group_b_size: 3,
 
-      total_dots: 16,
+      total_dots: 7,
 
       side_assignment:
         "A_right"
@@ -2248,9 +2314,9 @@
       space_level: 2,
 
       group_a_size: 5,
-      group_b_size: 6,
+      group_b_size: 4,
 
-      total_dots: 11,
+      total_dots: 9,
 
       side_assignment:
         "A_left"
@@ -2266,10 +2332,10 @@
       color_level: 2,
       space_level: 3,
 
-      group_a_size: 7,
-      group_b_size: 8,
+      group_a_size: 4,
+      group_b_size: 6,
 
-      total_dots: 15,
+      total_dots: 10,
 
       side_assignment:
         "A_right"
@@ -2289,8 +2355,8 @@
 
     const validTotal =
       spec.total_dots ===
-      spec.group_a_size +
-        spec.group_b_size;
+        spec.group_a_size + spec.group_b_size &&
+      spec.total_dots <= TOTAL_MAX;
 
     if (!validSizes || !validTotal) {
       throw new Error(
