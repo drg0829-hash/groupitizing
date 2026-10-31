@@ -29,7 +29,6 @@
     CLUSTER_RADIUS_MIN: 65,
     CLUSTER_RADIUS_MAX: 135,
     CLUSTER_BOUNDARY_GAP: 8,
-    CLUSTER_BETWEEN_GAP: 38,
     FIXATION_DURATION: 1000,
     RESPONSE_DEADLINE: 4000,
     ITI_DURATION: 300,
@@ -210,7 +209,7 @@
     return [
       { n: 8, condition: 'R1', spatial_partition_id: null, color_partition_id: null },
       { n: 9, condition: 'R2', spatial_partition_id: null, color_partition_id: 1, color_variant: 0, red_count: 4, cyan_count: 5, red_on_left: true },
-      { n: 10, condition: 'C2', spatial_partition_id: 1, color_partition_id: 1, color_variant: 0, red_count: 5, cyan_count: 5, side_assignment: 'A_left' },
+      { n: 10, condition: 'C2', spatial_partition_id: 1, color_partition_id: 1, color_variant: 0, red_count: 5, cyan_count: 5, side_assignment: 'A_left', red_on_left: true },
       { n: 12, condition: 'C4', spatial_partition_id: 0, color_partition_id: 1, color_variant: 0, red_count: 6, cyan_count: 6, side_assignment: 'A_right' }
     ].map((s, i) => ({
       ...s,
