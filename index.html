@@ -20,7 +20,7 @@
   'use strict';
 
   const CONFIG = Object.freeze({
-    VERSION: '2.1.0',
+    VERSION: '2.2.0',
     CANVAS_WIDTH: 960,
     CANVAS_HEIGHT: 540,
     DOT_RADIUS: 7,
@@ -113,41 +113,72 @@
           }
         }
 
-        // Assign group side independently of grid position; exact left/right balance.
-        for (let sp = 0; sp < 2; sp++) {
-          const group = specs.filter(s => s.spatial_partition_id === sp);
-          if (group.length === 0) continue;
-          if (group.length % 2) throw new Error('Odd spatial partition count');
-          const directions = shuffle([
-            ...Array(group.length / 2).fill('A_left'),
-            ...Array(group.length / 2).fill('A_right')
-          ], rng);
-          group.forEach((s, i) => { s.side_assignment = directions[i]; });
+        // Joint counterbalancing: red's LEFT/RIGHT dominant cluster across all
+        // 12 C2/C3 trials is 6:6, while each spatial partition keeps A-left
+        // 3:3 and each color partition keeps variant0/variant1 3:3.
+        // The 2x2 side-by-color table within each 6-trial partition cannot
+        // be perfectly equal; use the optimal 1/2/2/1 vs 2/1/1/2 patterns.
+        if (condition === 'C2' || condition === 'C3') {
+          const jointCounts = shuffle([1, 2], rng);
+          for (let sp = 0; sp < 2; sp++) {
+            const group = shuffle(specs.filter(s => s.spatial_partition_id === sp), rng);
+            const dirs = shuffle([...'LLLRRR'], rng);
+            group.forEach((s, i) => { s.side_assignment = dirs[i] === 'L' ? 'A_left' : 'A_right'; });
+            const aLeft = shuffle(group.filter(s => s.side_assignment === 'A_left'), rng);
+            const aRight = shuffle(group.filter(s => s.side_assignment === 'A_right'), rng);
+            const k = jointCounts[sp]; // 1 or 2 of the three A-left trials get red cluster A.
+            aLeft.forEach((s, i) => { s.color_variant = i < k ? 0 : 1; });
+            aRight.forEach((s, i) => { s.color_variant = i < 3 - k ? 0 : 1; });
+          }
+        } else {
+          // Keep the existing balanced but independently shuffled allocations
+          // for the other conditions (including C4's 2x2 partition crossover).
+          for (let sp = 0; sp < 2; sp++) {
+            const group = specs.filter(s => s.spatial_partition_id === sp);
+            if (group.length === 0) continue;
+            if (group.length % 2) throw new Error('Odd spatial partition count');
+            const directions = shuffle([
+              ...Array(group.length / 2).fill('A_left'),
+              ...Array(group.length / 2).fill('A_right')
+            ], rng);
+            group.forEach((s, i) => { s.side_assignment = directions[i]; });
+          }
+          for (let cp = 0; cp < 2; cp++) {
+            const group = specs.filter(s => s.color_partition_id === cp);
+            if (group.length === 0) continue;
+            if (group.length % 2) throw new Error('Odd color partition count');
+            const variants = shuffle([
+              ...Array(group.length / 2).fill(0),
+              ...Array(group.length / 2).fill(1)
+            ], rng);
+            group.forEach((s, i) => { s.color_variant = variants[i]; });
+          }
         }
 
-        // redCount=a vs b exactly 50/50 for every color partition. This also
-        // controls color side/reversal when a=b (e.g. 4+4, 5+5, 6+6).
-        for (let cp = 0; cp < 2; cp++) {
-          const group = specs.filter(s => s.color_partition_id === cp);
-          if (group.length === 0) continue;
-          if (group.length % 2) throw new Error('Odd color partition count');
-          const variants = shuffle([
-            ...Array(group.length / 2).fill(0),
-            ...Array(group.length / 2).fill(1)
-          ], rng);
-          group.forEach((s, i) => {
-            s.color_variant = variants[i];
-            s.red_count = PARTITIONS[n][cp][variants[i]];
-            s.cyan_count = n - s.red_count;
-          });
-        }
+        // Compute exact red and cyan counts from the already-balanced variants.
+        // In both C2 and C3 the dominant-red cluster is variant0 -> group A,
+        // variant1 -> group B (C3's ties are resolved this way below).
+        specs.forEach(s => {
+          if (s.color_partition_id === null) return;
+          s.red_count = PARTITIONS[n][s.color_partition_id][s.color_variant];
+          s.cyan_count = n - s.red_count;
+          if (condition === 'C2' || condition === 'C3') {
+            const redCluster = s.color_variant;
+            const leftCluster = s.side_assignment === 'A_left' ? 0 : 1;
+            s.red_on_left = redCluster === leftCluster;
+          }
+        });
 
-        // For R2, half of each color partition is red on the left, half cyan.
+        // R2's color count × color side crossing also avoids 0:3 or 3:0
+        // imbalances: within each 6-trial partition, each joint cell is 1 or 2.
         if (condition === 'R2') {
           for (let cp = 0; cp < 2; cp++) {
             const group = specs.filter(s => s.color_partition_id === cp);
-            const directions = shuffle([0, 0, 0, 1, 1, 1], rng);
-            group.forEach((s, i) => { s.red_on_left = Boolean(directions[i]); });
+            const first = shuffle(group.filter(s => s.color_variant === 0), rng);
+            const second = shuffle(group.filter(s => s.color_variant === 1), rng);
+            const k = 1 + randomInt(2, rng);
+            first.forEach((s, i) => { s.red_on_left = i < k; });
+            second.forEach((s, i) => { s.red_on_left = i < 3 - k; });
           }
         }
 
@@ -212,6 +243,20 @@
             throw new Error('Spatial direction imbalance');
           }
         }
+        if (condition === 'C2' || condition === 'C3') {
+          if (group.filter(s => s.red_on_left).length !== 6) {
+            throw new Error('C2/C3 red-dominant left-right imbalance');
+          }
+          for (let sp = 0; sp < 2; sp++) {
+            const sub = group.filter(s => s.spatial_partition_id === sp);
+            const nLeft = sub.filter(s => s.red_on_left).length;
+            if (nLeft !== 2 && nLeft !== 4) throw new Error('Crossed spatial/color allocation imbalance');
+            for (let v = 0; v < 2; v++) {
+              const nAleft = sub.filter(s => s.side_assignment === 'A_left' && s.color_variant === v).length;
+              if (nAleft !== 1 && nAleft !== 2) throw new Error('Side/color joint cell imbalance');
+            }
+          }
+        }
         if (condition === 'C4') {
           for (let sp = 0; sp < 2; sp++) for (let cp = 0; cp < 2; cp++) {
             if (group.filter(s => s.spatial_partition_id === sp && s.color_partition_id === cp).length !== 3) {
@@ -221,8 +266,13 @@
         }
         if (condition === 'R2') {
           for (let cp = 0; cp < 2; cp++) {
-            if (group.filter(s => s.color_partition_id === cp && s.red_on_left).length !== 3) {
+            const sub = group.filter(s => s.color_partition_id === cp);
+            if (sub.filter(s => s.red_on_left).length !== 3) {
               throw new Error('R2 side imbalance');
+            }
+            for (let variant = 0; variant < 2; variant++) {
+              const joint = sub.filter(s => s.color_variant === variant && s.red_on_left).length;
+              if (joint !== 1 && joint !== 2) throw new Error('R2 side/color joint imbalance');
             }
           }
         }
@@ -399,7 +449,13 @@
       const minimum = Math.min(...options.map(o => o.flips));
       const candidates = options.filter(o => o.flips === minimum);
       if (minimum !== 1) throw new Error('C3 must differ by exactly one dot');
-      const redCluster = candidates[randomInt(candidates.length, rng)].cluster;
+      // Keep the red-majority side balanced across the schedule.
+      // In ambiguous cases both choices require one color flip; choose the
+      // color_variant cluster rather than drawing it independently at random.
+      const redCluster = spec.color_variant;
+      if (!candidates.some(o => o.cluster === redCluster)) {
+        throw new Error('C3 red cluster incompatible with the color partition');
+      }
       dots.forEach((p, i) => { labels[i] = p.cluster === redCluster ? 'red' : 'cyan'; });
       const currentRed = labels.filter(c => c === 'red').length;
       const changeFrom = currentRed < redCount ? 'cyan' : 'red';
@@ -739,7 +795,7 @@
           <div class="trial-wrap">
             <canvas id="${canvasId}" class="stimulus-canvas"
               width="${CFG.CANVAS_WIDTH}" height="${CFG.CANVAS_HEIGHT}"></canvas>
-            <div class="response-line">입력: <span id="${responseId}" class="response-box">0</span></div>
+            <div class="response-line">입력: <span id="${responseId}" class="response-box">—</span></div>
             <div class="response-hint">
               보이는 각 덩어리의 개수를 숫자 키(1~9)로 차례로 누르고 <kbd>Enter</kbd>를 누르세요.<br>
               예: 3, 4, 3으로 보이면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd> <kbd>Enter</kbd>.
@@ -750,6 +806,7 @@
       },
       choices: 'NO_KEYS',
       trial_duration: CFG.RESPONSE_DEADLINE,
+      post_trial_gap: CFG.ITI_DURATION, // Blank 300 ms after response/timeout, before next phase.
       data: {
         phase, block: spec.block, trial_in_block: spec.trial_in_block,
         main_trial_number: spec.main_trial_number || null,
@@ -781,9 +838,9 @@
         shownAt = performance.now();
 
         function renderResponse() {
-          responseElement.textContent = chunks.length
-            ? chunks.join(' + ') + ' = ' + chunks.reduce((a, b) => a + b, 0)
-            : '0';
+          // Show the reported chunks, but do NOT reveal their running sum.
+          // Only the saved response is summed when Enter is pressed.
+          responseElement.textContent = chunks.length ? chunks.join(' + ') : '—';
         }
 
         handler = function (event) {
@@ -932,7 +989,7 @@
       <p>화면에 여러 개의 점이 나타납니다.</p>
       <p>점의 색과 관계없이 <strong>모든 점</strong>의 개수를 세어 주세요.</p>
       <p>한눈에 알아본 점 개수를 숫자 키로 차례로 누르세요.<br>
-      예를 들어 3개, 4개, 3개로 보였다면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd>을 누르면 합계 10이 자동으로 계산됩니다.</p>
+      예를 들어 3개, 4개, 3개로 보였다면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd>을 누르면 프로그램이 내부적으로 합계를 계산합니다.</p>
       <p>다 눌렀으면 <kbd>Enter</kbd>를 누르세요. 합계가 응답으로 제출됩니다.</p>
       <p>잘못 눌렀으면 <kbd>Backspace</kbd>로 마지막 입력을 취소할 수 있습니다.</p>
       <p>전체 점 개수는 <strong>8개부터 12개</strong> 사이입니다.</p>
