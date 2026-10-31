@@ -20,14 +20,14 @@
   'use strict';
 
   const CONFIG = Object.freeze({
-    VERSION: '2.0.0',
+    VERSION: '2.1.0',
     CANVAS_WIDTH: 960,
     CANVAS_HEIGHT: 540,
     DOT_RADIUS: 7,
     MIN_DISTANCE: 25,
     MARGIN: 20,
-    CLUSTER_RADIUS_MIN: 48,
-    CLUSTER_RADIUS_MAX: 78,
+    CLUSTER_RADIUS_MIN: 65,
+    CLUSTER_RADIUS_MAX: 135,
     CLUSTER_BOUNDARY_GAP: 8,
     CLUSTER_BETWEEN_GAP: 38,
     FIXATION_DURATION: 1000,
@@ -254,14 +254,14 @@
     return { dots: points, cluster_meta: null };
   }
 
-  // A grid is sampled *once* per cluster per trial. Rejections only resample
-  // centers inside the same selected grid cells; they never change cell IDs.
+  // One of the 4 cells (2x2 per half) is drawn independently and uniformly for each cluster.
+  // Keep sampled cell IDs fixed when resampling positions/radii.
   function gridBounds(side, cell) {
-    const row = Math.floor(cell / 3);
-    const col = cell % 3;
+    const row = Math.floor(cell / 2);
+    const col = cell % 2;
     const x0 = side === 'left' ? 0 : CONFIG.CANVAS_WIDTH / 2;
-    const cellW = CONFIG.CANVAS_WIDTH / 6;
-    const cellH = CONFIG.CANVAS_HEIGHT / 3;
+    const cellW = CONFIG.CANVAS_WIDTH / 4;
+    const cellH = CONFIG.CANVAS_HEIGHT / 2;
     return {
       minX: x0 + col * cellW,
       maxX: x0 + (col + 1) * cellW,
@@ -318,7 +318,7 @@
   }
 
   function sampleClusters(spec, rng) {
-    const cells = [randomInt(9, rng), randomInt(9, rng)]; // 0-based left/right, independent.
+    const cells = [randomInt(4, rng), randomInt(4, rng)]; // 0-based, independent 2x2 choices
     for (let attempt = 0; attempt < 4000; attempt++) {
       const leftCenter = sampleCenterInCell('left', cells[0], rng);
       const rightCenter = sampleCenterInCell('right', cells[1], rng);
@@ -365,7 +365,7 @@
     throw new Error(`Cannot place cluster centers inside fixed cells ${cells[0]+1},${cells[1]+1}`);
   }
 
-  function assignColors(spec, dots, rng) {
+  function assignColors(spec, dots, clusterMeta, rng) {
     const n = dots.length;
     const labels = Array(n).fill('gray');
     if (!isColorCondition(spec.condition)) return labels;
@@ -404,7 +404,24 @@
       const currentRed = labels.filter(c => c === 'red').length;
       const changeFrom = currentRed < redCount ? 'cyan' : 'red';
       const possible = dots.map((_, i) => i).filter(i => labels[i] === changeFrom);
-      labels[possible[randomInt(possible.length, rng)]] = changeFrom === 'red' ? 'cyan' : 'red';
+        // Choose the one mismatching point at the spatial boundary:
+        // among points of the cluster that must lose a color, select the
+        // point whose (x,y) position is closest to the OPPOSITE cluster center.
+        // Use Euclidean distance on both axes, not a random point.
+        if (!clusterMeta) throw new Error('C3 requires cluster centers');
+        const sourceCluster = dots[possible[0]].cluster;
+        if (!possible.every(i => dots[i].cluster === sourceCluster)) {
+          throw new Error('C3 flip candidates must belong to one cluster');
+        }
+        const otherCenter = dots[possible[0]].side === 'left'
+          ? clusterMeta.center_right : clusterMeta.center_left;
+        let closestIndex = possible[0];
+        for (const i of possible.slice(1)) {
+          if (distance(dots[i], otherCenter) < distance(dots[closestIndex], otherCenter)) {
+            closestIndex = i;
+          }
+        }
+        labels[closestIndex] = changeFrom === 'red' ? 'cyan' : 'red';
     } else if (spec.condition === 'C4') {
       // Truly shuffled subject to: both colors occur in both spatial clusters.
       let found = false;
@@ -448,7 +465,7 @@
 
   function generateStimulus(spec, rng = Math.random) {
     const geometry = isClusterCondition(spec.condition) ? sampleClusters(spec, rng) : sampleUniform(spec.n, rng);
-    const labels = assignColors(spec, geometry.dots, rng);
+    const labels = assignColors(spec, geometry.dots, geometry.cluster_meta, rng);
     const dots = shuffle(geometry.dots.map((p, i) => ({ ...p, color: labels[i] })), rng);
     const within = [0, 1].map(k => meanNN(dots.filter(p => p.cluster === k)));
     const cross = isClusterCondition(spec.condition)
@@ -609,7 +626,7 @@
         ['canvas_width', CFG.CANVAS_WIDTH],
         ['canvas_height', CFG.CANVAS_HEIGHT],
         ['stimulus_duration_ms', CFG.RESPONSE_DEADLINE],
-        ['grid_sampling', 'independent_uniform_3x3_per_half_unbalanced'],
+        ['grid_sampling', 'independent_uniform_2x2_per_half_unbalanced'],
         ['color_calibration', 'none_fixed_RGB'],
         ['finished_at_iso', new Date().toISOString()]
       );
