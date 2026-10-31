@@ -799,8 +799,12 @@
             }
             enterRT = Math.round(performance.now() - shownAt);
             finishedInput = true;
-            errorElement.style.color = '#26733b';
-            errorElement.textContent = '입력이 완료되었습니다. 점은 4초가 끝날 때까지 표시됩니다.';
+            // 4초 이내에 제출했다면 제한시간 종료를 기다리지 않고 즉시 다음 시행으로 이동.
+            // on_finish에서 그룹별 입력값, RT 및 정답 여부를 기존대로 기록한다.
+            jsPsych.finishTrial({
+              response: chunks.reduce((a, b) => a + b, 0),
+              rt: enterRT
+            });
           }
         };
         window.addEventListener('keydown', handler, { capture: true });
@@ -915,8 +919,8 @@
       <p>다 눌렀으면 <kbd>Enter</kbd>를 누르세요. 합계가 응답으로 제출됩니다.</p>
       <p>잘못 눌렀으면 <kbd>Backspace</kbd>로 마지막 입력을 취소할 수 있습니다.</p>
       <p>전체 점 개수는 <strong>8개부터 12개</strong> 사이입니다.</p>
-      <p><strong>점은 4초 동안 계속 보이며, 그 안에 Enter까지 눌러야 합니다.</strong><br>
-      먼저 Enter를 눌러도 남은 시간 동안 점은 그대로 표시됩니다.</p>
+      <p><strong>점이 나타난 뒤 4초 안에 Enter까지 눌러야 합니다.</strong><br>
+      4초 전에 Enter를 누르면 즉시 다음 시행으로 넘어갑니다.</p>
       <p>정확하고 빠르게 응답해 주세요.</p>
       <p>먼저 <strong>4회의 연습</strong>을 진행합니다.</p>
       <p>준비되면 스페이스바를 누르세요.</p></div>`,
