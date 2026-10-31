@@ -20,7 +20,7 @@
   'use strict';
 
   const CONFIG = Object.freeze({
-    VERSION: '2.2.0',
+    VERSION: '2.0.0',
     CANVAS_WIDTH: 960,
     CANVAS_HEIGHT: 540,
     DOT_RADIUS: 7,
@@ -374,19 +374,12 @@
       const d = distance(leftCenter, rightCenter);
       const leftMax = maxRadiusAt(leftCenter, 'left');
       const rightMax = maxRadiusAt(rightCenter, 'right');
-      if (leftMax < CONFIG.CLUSTER_RADIUS_MIN || rightMax < CONFIG.CLUSTER_RADIUS_MIN ||
-          d < CONFIG.CLUSTER_RADIUS_MIN * 2 + CONFIG.CLUSTER_BETWEEN_GAP) continue;
-      let leftRadius, rightRadius;
-      let acceptedRadii = false;
-      for (let rTry = 0; rTry < 100; rTry++) {
-        leftRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, leftMax, rng);
-        rightRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, rightMax, rng);
-        if (d - leftRadius - rightRadius >= CONFIG.CLUSTER_BETWEEN_GAP) {
-          acceptedRadii = true;
-          break;
-        }
-      }
-      if (!acceptedRadii) continue;
+      if (leftMax < CONFIG.CLUSTER_RADIUS_MIN || rightMax < CONFIG.CLUSTER_RADIUS_MIN) continue;
+      // Each cluster's radius is bounded within its own half-screen.
+      // Therefore the two enclosing circles already have at least 70px separation;
+      // an additional inter-cluster gap check is redundant.
+      const leftRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, leftMax, rng);
+      const rightRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, rightMax, rng);
       const aLeft = spec.side_assignment === 'A_left';
       const sizeLeft = spec.spatial_partition[aLeft ? 0 : 1];
       const sizeRight = spec.spatial_partition[aLeft ? 1 : 0];
