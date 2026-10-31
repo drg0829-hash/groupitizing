@@ -4,2570 +4,463 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Groupitizing Experiment</title>
-
   <script src="https://unpkg.com/jspsych@8.3.0"></script>
   <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.2.0"></script>
   <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@2.1.0"></script>
-
-  <link
-    href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css"
-    rel="stylesheet"
-  >
-
+  <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet">
+  <script src="experiment-core.js"></script>
   <style>
-    body {
-      background: white;
-      color: #111;
-    }
-
-    .experiment-text {
-      max-width: 760px;
-      margin: 0 auto;
-      font-size: 20px;
-      line-height: 1.65;
-    }
-
-    .fixation {
-      font-size: 64px;
-      line-height: 1;
-    }
-
-    .trial-wrap {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 10px;
-    }
-
-    .stimulus-canvas {
-      display: block;
-      width: min(92vw, 120vh, 960px);
-      height: auto;
-      background: white;
-    }
-
-    .response-line {
-      min-height: 44px;
-      font-size: 25px;
-      line-height: 44px;
-    }
-
-    .response-box {
-      display: inline-block;
-      min-width: 72px;
-      margin-left: 8px;
-      padding: 0 10px;
-      border-bottom: 2px solid #222;
-      font-weight: bold;
-      letter-spacing: 1px;
-    }
-
-    .response-hint {
-      font-size: 16px;
-      color: #555;
-    }
-
-    .response-error {
-      min-height: 24px;
-      color: #b00020;
-      font-size: 16px;
-    }
-
-    kbd {
-      padding: 2px 7px;
-      border: 1px solid #aaa;
-      border-radius: 4px;
-      background: #f4f4f4;
-      font-family: inherit;
-    }
+    body { margin: 0; background: white; color: #111; }
+    .experiment-text { max-width: 760px; margin: 0 auto; font-size: 20px; line-height: 1.65; padding: 0 16px; }
+    .experiment-text h2 { margin-bottom: 14px; }
+    .fixation { font-size: 64px; line-height: 1; }
+    .trial-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+    .stimulus-canvas { display: block; width: min(92vw, 120vh, 960px); height: auto; background: white; }
+    .response-line { min-height: 44px; line-height: 44px; font-size: 25px; }
+    .response-box { display: inline-block; min-width: 72px; margin-left: 8px; padding: 0 10px; border-bottom: 2px solid #222; font-weight: bold; letter-spacing: 1px; }
+    .response-hint { font-size: 16px; color: #555; text-align: center; max-width: 900px; }
+    .response-error { min-height: 24px; color: #a00018; font-size: 16px; }
+    kbd { display: inline-block; padding: 2px 7px; border: 1px solid #aaa; border-radius: 4px; background: #f4f4f4; font-family: inherit; }
+    .small-note { color: #666; font-size: 16px; }
   </style>
 </head>
-
 <body></body>
-
 <script>
-  "use strict";
+  'use strict';
+  /* GitHub Pages용 브라우저 JavaScript 실험. 기존 jsPsych 8.3.0 스타일·전송 형식 유지. */
+  const core = GroupitizingCore;
+  const CFG = core.CONFIG;
+  const EXPERIMENT_VERSION = CFG.VERSION;
 
-  /*
-   * =========================================
-   * 1. 전체 실험 설정
-   * =========================================
-   */
+  // 기존 파일에 포함된 Google Apps Script 웹 앱 설정을 유지.
+  // 주의: 공개 GitHub 저장소의 이 값은 비밀이 아닙니다. 운영 전 접근 제어를 반드시 점검하세요.
+  const SAVE_URL = 'https://script.google.com/macros/s/AKfycbx7B4yDoEn0z73eTvkGulvDcG9AX0D69Y7bkkiO8tWH6gsqQPysuwb42szJ6btggX8_/exec';
+  const SAVE_SECRET = 'minseo0605';
 
-  const EXPERIMENT_VERSION = "1.6.0";
-
-  const CANVAS_WIDTH = 960;
-  const CANVAS_HEIGHT = 540;
-
-  const DOT_RADIUS = 7;
-
-  /*
-   * 점 중심 사이의 최소 거리.
-   * 점 지름이 14이므로 가장자리 사이
-   * 최소 간격은 11px이 된다.
-   */
-  const MIN_DISTANCE = 25;
-
-  const MARGIN = 20;
-
-  const FIXATION_DURATION = 1000;
-  const RESPONSE_DEADLINE = 4000;
-
-  const BLOCK_COUNT = 5;
-  const TRIALS_PER_BLOCK = 80;
-
-  /*
-   * =========================================
-   * 1-1. 점 개수 범위
-   * =========================================
-   *
-   * 색깔당 3–6개, 전체 최대 12개.
-   */
-
-  const GROUP_SIZE_MIN = 3;
-  const GROUP_SIZE_MAX = 6;
-
-  const GROUP_SIZES = [];
-
-  for (
-    let size = GROUP_SIZE_MIN;
-    size <= GROUP_SIZE_MAX;
-    size++
-  ) {
-    GROUP_SIZES.push(size);
-  }
-
-  const TOTAL_MIN =
-    GROUP_SIZE_MIN * 2;
-
-  const TOTAL_MAX = 12;
-
-  const TOTAL_COUNT =
-    TOTAL_MAX - TOTAL_MIN + 1;
-
-  /*
-   * 조건(Color × Space)당 trial 수.
-   * 5 color × 4 space × 20 = 400
-   */
-  const TRIALS_PER_CONDITION = 20;
-
-  /*
-   * =========================================
-   * 1-2. 개수 분포 방식
-   * =========================================
-   *
-   * "uniform_group_size"
-   *   각 색의 점 개수(3–6)가
-   *   비복원 추출로 정확히 같은 횟수씩 등장.
-   *
-   * "uniform_total"
-   *   전체 개수(6–12)가
-   *   비복원 추출로 거의 같은 횟수씩 등장.
-   */
-  const COUNT_SAMPLING = "uniform_group_size";
-
-  /*
-   * =========================================
-   * 1-3. Google Sheets 저장 설정
-   * =========================================
-   */
-
-  const SAVE_URL = "https://script.google.com/macros/s/AKfycbx7B4yDoEn0z73eTvkGulvDcG9AX0D69Y7bkkiO8tWH6gsqQPysuwb42szJ6btggX8_/exec";
-  const SAVE_SECRET = "minseo0605";
-
-  /*
-   * trials 탭의 열 구성
-   */
   const TRIAL_COLUMNS = [
-    "phase",
-    "block",
-    "trial_in_block",
-    "main_trial_number",
-    "condition",
-    "condition_repeat",
-    "sampling_scheme",
-    "color_level",
-    "space_level",
-    "spatial_S",
-    "group_a_size",
-    "group_b_size",
-    "total_dots",
-    "side_assignment",
-    "group_a_region",
-    "group_b_region",
-    "group_a_inside",
-    "group_b_inside",
-    "inside_probability",
-    "p0",
-    "estimate",
-    "responded",
-    "timed_out",
-    "correct",
-    "signed_error",
-    "absolute_error",
-    "rt",
-    "chunks",
-    "n_chunks",
-    "chunk_times",
-    "first_chunk_rt",
-    "undo_count",
-    "partial_response",
-    "color_a_rgb",
-    "color_b_rgb",
-    "time_elapsed"
+    'phase', 'block', 'trial_in_block', 'main_trial_number',
+    'condition', 'n', 'total_dots', 'spatial_condition', 'color_condition',
+    'spatial_partition_id', 'color_partition_id', 'spatial_partition', 'color_partition',
+    'side_assignment', 'color_variant', 'red_count', 'cyan_count', 'red_on_left',
+    'grid_left', 'grid_right', 'center_left_x', 'center_left_y',
+    'center_right_x', 'center_right_y', 'radius_left', 'radius_right',
+    'center_distance', 'hull_area', 'mean_nn_all', 'within_cluster_mean_nn',
+    'cross_cluster_min_distance', 'spatial_ratio_actual', 'max_center_distance',
+    'estimate', 'responded', 'timed_out', 'correct', 'signed_error', 'absolute_error', 'rt',
+    'chunks', 'n_chunks', 'chunk_times', 'first_chunk_rt', 'undo_count',
+    'partial_response', 'partial_chunks', 'response_raw', 'response_status',
+    'response_deadline_ms', 'color_gray_rgb', 'color_red_rgb', 'color_cyan_rgb',
+    'canvas_logical_width', 'canvas_logical_height', 'canvas_displayed_width',
+    'canvas_displayed_height', 'dot_radius', 'minimum_dot_distance', 'time_elapsed'
   ];
-
-  /*
-   * dots 탭의 열 구성
-   */
   const DOT_COLUMNS = [
-    "phase",
-    "block",
-    "trial_in_block",
-    "main_trial_number",
-    "condition",
-    "dot_index",
-    "x",
-    "y",
-    "group",
-    "own_region",
-    "placement"
+    'phase', 'block', 'trial_in_block', 'main_trial_number', 'condition',
+    'dot_index', 'x', 'y', 'cluster', 'color', 'grid_cell', 'side'
   ];
-
-  /*
-   * session 탭에 남길 항목
-   */
   const SESSION_KEYS = [
-    "participant_id",
-    "session_id",
-    "experiment_version",
-    "sampling_scheme_global",
-    "started_at_iso",
-    "screen_width",
-    "screen_height",
-    "viewport_width",
-    "viewport_height",
-    "device_pixel_ratio",
-    "user_agent"
+    'participant_id', 'session_id', 'experiment_version',
+    'started_at_iso', 'screen_width', 'screen_height', 'viewport_width',
+    'viewport_height', 'device_pixel_ratio', 'user_agent'
   ];
 
-  /*
-   * true: 개발용 원형 영역 표시
-   * false: 실제 실험처럼 원형 영역 숨김
-   */
-  const SHOW_REGION_GUIDES = false;
-
-  let participantId = "anonymous";
-
-  /*
-   * =========================================
-   * 2. 보조 함수
-   * =========================================
-   */
-
-  function randomId(length) {
-    const characters =
-      "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-
-    const values = new Uint32Array(length);
-
-    crypto.getRandomValues(values);
-
-    return Array.from(values, function (value) {
-      return characters[
-        value % characters.length
-      ];
-    }).join("");
-  }
-
-  function safeFilename(value) {
-    return String(value)
-      .trim()
-      .replace(/[^a-zA-Z0-9_-]/g, "_")
-      .slice(0, 40) || "anonymous";
-  }
-
-  function rgbToCss(rgb) {
-    return `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
-  }
-
-  function sumOf(values) {
-    return values.reduce(
-      function (total, value) {
-        return total + value;
-      },
-      0
-    );
-  }
-
-  /*
-   * setValues는 undefined를 거부하므로
-   * 빈 값과 boolean을 미리 정리한다.
-   */
-  function cell(value) {
-    if (value === null || value === undefined) {
-      return "";
-    }
-
-    if (typeof value === "boolean") {
-      return value ? 1 : 0;
-    }
-
+  const cell = value => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'boolean') return value ? 1 : 0;
     return value;
-  }
-
-  const sessionId = randomId(12);
-
-  /*
-   * =========================================
-   * 3. jsPsych 시작 및 데이터 전송
-   * =========================================
-   */
+  };
+  const safeFilename = value => String(value).trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'participant';
+  const randomId = (length = 12) => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = new Uint32Array(length);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map(v => chars[v % chars.length]).join('');
+  };
+  const sessionId = randomId();
+  let participantId = 'anonymous';
+  const startISO = new Date().toISOString();
 
   const jsPsych = initJsPsych({
-    on_finish: function () {
+    on_finish: async function () {
       document.body.innerHTML = `
         <div class="experiment-text">
           <h2>데이터를 전송하고 있습니다.</h2>
+          <p>전송이 끝날 때까지 창을 닫지 마세요.</p>
+        </div>`;
 
-          <p>
-            창을 닫지 마세요.
-            잠시 걸릴 수 있습니다.
-          </p>
-        </div>
-      `;
-
-      const trials =
-        jsPsych.data
-          .get()
-          .filter([
-            { phase: "main" },
-            { phase: "practice" }
-          ])
-          .values();
-
-      const trialRows = [];
+      const rows = jsPsych.data.get().filter([
+        { phase: 'main' }, { phase: 'practice' }
+      ]).values();
+      const trialRows = rows.map(r => TRIAL_COLUMNS.map(column => cell(r[column])));
       const dotRows = [];
-
-      trials.forEach(function (row) {
-        trialRows.push(
-          TRIAL_COLUMNS.map(function (column) {
-            return cell(row[column]);
-          })
-        );
-
-        const dots =
-          JSON.parse(row.dot_positions);
-
-        dots.forEach(function (dot, index) {
-          dotRows.push([
-            cell(row.phase),
-            cell(row.block),
-            cell(row.trial_in_block),
-            cell(row.main_trial_number),
-            cell(row.condition),
-            index + 1,
-            dot.x,
-            dot.y,
-            dot.g,
-            dot.r,
-            dot.p === 1 ? "inside_own" : "outside_own"
-          ]);
-        });
-      });
-
-      const firstRow =
-        jsPsych.data.get().values()[0] || {};
-
-      const sessionRows =
-        SESSION_KEYS.map(function (key) {
-          return [key, cell(firstRow[key])];
-        });
-
-      const mainTrials =
-        jsPsych.data
-          .get()
-          .filter({ phase: "main" });
-
+      for (const r of rows) {
+        let dots;
+        try { dots = JSON.parse(r.dot_positions || '[]'); }
+        catch (error) { console.error('점 좌표 데이터 읽기 오류', error); dots = []; }
+        dots.forEach((dot, i) => dotRows.push([
+          cell(r.phase), cell(r.block), cell(r.trial_in_block),
+          cell(r.main_trial_number), cell(r.condition), i + 1,
+          dot.x, dot.y, dot.cluster, dot.color, cell(dot.grid_cell), cell(dot.side)
+        ]));
+      }
+      const firstRow = jsPsych.data.get().values()[0] || {};
+      const sessionRows = SESSION_KEYS.map(k => [k, cell(firstRow[k])]);
+      const main = jsPsych.data.get().filter({ phase: 'main' });
+      const mainCount = main.count();
       sessionRows.push(
-        ["n_main_trials", mainTrials.count()],
-
-        [
-          "n_responded",
-          mainTrials
-            .filter({ responded: true })
-            .count()
-        ],
-
-        [
-          "accuracy",
-          mainTrials
-            .filter({ correct: true })
-            .count() /
-          mainTrials.count()
-        ],
-
-        ["finished_at_iso", new Date().toISOString()]
+        ['n_main_trials', mainCount],
+        ['n_responded', main.filter({ responded: true }).count()],
+        ['n_timed_out', main.filter({ timed_out: true }).count()],
+        ['accuracy_all_trials', mainCount ? main.filter({ correct: true }).count() / mainCount : 0],
+        ['n_practice_trials', rows.filter(r => r.phase === 'practice').length],
+        ['canvas_width', CFG.CANVAS_WIDTH],
+        ['canvas_height', CFG.CANVAS_HEIGHT],
+        ['stimulus_duration_ms', CFG.RESPONSE_DEADLINE],
+        ['grid_sampling', 'independent_uniform_3x3_per_half_unbalanced'],
+        ['color_calibration', 'none_fixed_RGB'],
+        ['finished_at_iso', new Date().toISOString()]
       );
-
       const payload = {
         secret: SAVE_SECRET,
-
-        filename:
-          [
-            "groupitizing",
-            safeFilename(participantId),
-            sessionId
-          ].join("_"),
-
+        filename: ['groupitizing', safeFilename(participantId), sessionId].join('_'),
         trial_columns: TRIAL_COLUMNS,
         trial_rows: trialRows,
-
         dot_columns: DOT_COLUMNS,
         dot_rows: dotRows,
-
         session_rows: sessionRows
       };
-
-      (async function () {
-        /*
-         * 네트워크가 불안정할 수 있으므로
-         * 최대 3회까지 재시도한다.
-         */
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          try {
-            /*
-             * text/plain으로 보내야 CORS preflight가
-             * 생기지 않는다. Apps Script는 preflight에
-             * 제대로 응답하지 못한다.
-             */
-            const response = await fetch(SAVE_URL, {
-              method: "POST",
-
-              headers: {
-                "Content-Type": "text/plain;charset=utf-8"
-              },
-
-              body: JSON.stringify(payload)
-            });
-
-            const result = await response.json();
-
-            if (result.status !== "ok") {
-              throw new Error(result.message);
-            }
-
-            document.body.innerHTML = `
-              <div class="experiment-text">
-                <h2>실험이 종료되었습니다.</h2>
-
-                <p>데이터가 정상적으로 저장되었습니다.</p>
-
-                <p>참여해 주셔서 감사합니다.</p>
-              </div>
-            `;
-
-            return;
-          } catch (error) {
-            console.error(
-              "전송 시도 " + attempt + " 실패",
-              error
-            );
-
-            if (attempt < 3) {
-              await new Promise(function (resolve) {
-                setTimeout(resolve, 2000 * attempt);
-              });
-            }
-          }
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const response = await fetch(SAVE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const result = await response.json();
+          if (result.status !== 'ok') throw new Error(result.message || '서버 저장 실패');
+          document.body.innerHTML = `
+            <div class="experiment-text"><h2>실험이 종료되었습니다.</h2>
+              <p>데이터가 정상적으로 저장되었습니다.</p>
+              <p>참여해 주셔서 감사합니다.</p>
+            </div>`;
+          return;
+        } catch (error) {
+          console.error(`저장 시도 ${attempt}/3 실패`, error);
+          if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
         }
-
-        /*
-         * 3회 모두 실패하면 로컬로 내려받는다.
-         */
-        document.body.innerHTML = `
-          <div class="experiment-text">
-            <h2>전송에 실패했습니다.</h2>
-
-            <p>
-              데이터를 파일로 내려받습니다.
-              연구자에게 전달해 주세요.
-            </p>
-          </div>
-        `;
-
-        jsPsych.data
-          .get()
-          .localSave(
-            "csv",
-            payload.filename + ".csv"
-          );
-      })();
+      }
+      document.body.innerHTML = `
+        <div class="experiment-text"><h2>전송에 실패했습니다.</h2>
+          <p>브라우저에 파일을 내려받습니다. 파일을 연구자에게 전달해 주세요.</p>
+          <p class="small-note">다운로드가 차단되었다면 브라우저의 다운로드 권한을 허용하세요.</p>
+        </div>`;
+      // Original CSV backup, plus full payload JSON (including per-dot rows).
+      jsPsych.data.get().localSave('csv', payload.filename + '.csv');
+      try {
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = payload.filename + '_full.json';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      } catch (error) { console.error('JSON 백업 오류', error); }
     }
   });
 
-  /*
-   * =========================================
-   * 4. Color level
-   * =====   * ====================================
-   */
-
-  const COLOR_LEVELS = {
-    1: {
-      groupA: [255, 0, 0],
-      groupB: [0, 255, 255]
-    },
-
-    2: {
-      groupA: [223, 32, 32],
-      groupB: [32, 223, 223]
-    },
-
-    3: {
-      groupA: [191, 64, 64],
-      groupB: [64, 191, 191]
-    },
-
-    4: {
-      groupA: [159, 96, 96],
-      groupB: [96, 159, 159]
-    },
-
-    5: {
-      groupA: [128, 128, 128],
-      groupB: [128, 128, 128]
-    }
-  };
-
-  /*
-   * =========================================
-   * 5. Space level
-   * =========================================
-   */
-
-  const SPACE_LEVELS = {
-    1: 0,
-    2: 1 / 3,
-    3: 2 / 3,
-    4: 1
-  };
-
-  /*
-   * =========================================
-   * 6. 원형 영역
-   * =========================================
-   */
-
-  const REGION_RADIUS =
-    CANVAS_WIDTH / 7;
-
-  const REGIONS = {
-    left: {
-      centerX: 2 * CANVAS_WIDTH / 7,
-      centerY: CANVAS_HEIGHT / 2,
-      radius: REGION_RADIUS
-    },
-
-    right: {
-      centerX: 5 * CANVAS_WIDTH / 7,
-      centerY: CANVAS_HEIGHT / 2,
-      radius: REGION_RADIUS
-    }
-  };
-
-  /*
-   * 무작위 배치에서 자기 영역에
-   * 들어갈 확률
-   */
-
-  const P0 =
-    Math.PI * REGION_RADIUS ** 2 /
-    (CANVAS_WIDTH * CANVAS_HEIGHT);
-
-  /*
-   * =========================================
-   * 7. 전체 개수별 가능한 그룹 조합
-   * =========================================
-   *
-   * 현재 설정(색깔당 3–6, 합 ≤ 12)에서는
-   *    6: [3,3]
-   *    7: [3,4] [4,3]
-   *    8: [3,5] [4,4] [5,3]
-   *    9: [3,6] [4,5] [5,4] [6,3]
-   *   10: [4,6] [5,5] [6,4]
-   *   11: [5,6] [6,5]
-   *   12: [6,6]
-   */
-
-  const VALID_GROUP_PAIRS = {};
-
-  for (
-    let total = TOTAL_MIN;
-    total <= TOTAL_MAX;
-    total++
-  ) {
-    const pairs = [];
-
-    for (const sizeA of GROUP_SIZES) {
-      const sizeB = total - sizeA;
-
-      if (
-        sizeB >= GROUP_SIZE_MIN &&
-        sizeB <= GROUP_SIZE_MAX
-      ) {
-        pairs.push([sizeA, sizeB]);
-      }
-    }
-
-    VALID_GROUP_PAIRS[total] = pairs;
-  }
-
-  /*
-   * =========================================
-   * 8. 공간 계산 함수
-   * =========================================
-   */
-
-  function distance(point1, point2) {
-    const dx = point1.x - point2.x;
-    const dy = point1.y - point2.y;
-
-    return Math.sqrt(
-      dx ** 2 +
-      dy ** 2
-    );
-  }
-
-  function isFarEnough(
-    point,
-    existingPoints
-  ) {
-    return existingPoints.every(
-      function (existingPoint) {
-        return (
-          distance(point, existingPoint) >=
-          MIN_DISTANCE
-        );
-      }
-    );
-  }
-
-  function isInsideRegion(
-    point,
-    region
-  ) {
-    const center = {
-      x: region.centerX,
-      y: region.centerY
-    };
-
-    return distance(point, center) <= region.radius;
-  }
-
-  function insideProbability(
-    spaceLevel
-  ) {
-    const S =
-      SPACE_LEVELS[spaceLevel];
-
-    return (
-      P0 +
-      (1 - P0) * S
-    );
-  }
-
-  function insideCount(
-    groupSize,
-    spaceLevel
-  ) {
-    return Math.round(
-      groupSize *
-      insideProbability(spaceLevel)
-    );
-  }
-
-  /*
-   * =========================================
-   * 9. 원 내부 위치 생성
-   * =========================================
-   */
-
-  function sampleInsideRegion(
-    region,
-    existingPoints
-  ) {
-    const maximumAttempts = 20000;
-
-    for (
-      let attempt = 0;
-      attempt < maximumAttempts;
-      attempt++
-    ) {
-      const angle =
-        Math.random() *
-        2 *
-        Math.PI;
-
-      /*
-       * sqrt를 사용해야 원 전체 면적에
-       * 점이 균일하게 분포한다.
-       */
-      const radialDistance =
-        Math.sqrt(Math.random()) *
-        region.radius;
-
-      const point = {
-        x:
-          region.centerX +
-          radialDistance *
-          Math.cos(angle),
-
-        y:
-          region.centerY +
-          radialDistance *
-          Math.sin(angle)
-      };
-
-      if (
-        isFarEnough(
-          point,
-          existingPoints
-        )
-      ) {
-        return point;
-      }
-    }
-
-    throw new Error(
-      "원형 영역 내부에 점을 배치하지 못했습니다."
-    );
-  }
-
-  /*
-   * =========================================
-   * 10. 자기 원 외부 위치 생성
-   * =========================================
-   */
-
-  function sampleOutsideOwnRegion(
-    ownRegion,
-    existingPoints
-  ) {
-    const maximumAttempts = 20000;
-
-    for (
-      let attempt = 0;
-      attempt < maximumAttempts;
-      attempt++
-    ) {
-      const point = {
-        x:
-          MARGIN +
-          Math.random() *
-          (
-            CANVAS_WIDTH -
-            2 * MARGIN
-          ),
-
-        y:
-          MARGIN +
-          Math.random() *
-          (
-            CANVAS_HEIGHT -
-            2 * MARGIN
-          )
-      };
-
-      const outsideOwnRegion =
-        !isInsideRegion(
-          point,
-          ownRegion
-        );
-
-      const farEnough =
-        isFarEnough(
-          point,
-          existingPoints
-        );
-
-      if (
-        outsideOwnRegion &&
-        farEnough
-      ) {
-        return point;
-      }
-    }
-
-    throw new Error(
-      "원형 영역 외부에 점을 배치하지 못했습니다."
-    );
-  }
-
-  /*
-   * =========================================
-   * 11. 그룹별 내부 점 추가
-   * =========================================
-   */
-
-  function addInsideDots(
-    allDots,
-    groupName,
-    count,
-    ownRegionName
-  ) {
-    const ownRegion =
-      REGIONS[ownRegionName];
-
-    for (let i = 0; i < count; i++) {
-      const point =
-        sampleInsideRegion(
-          ownRegion,
-          allDots
-        );
-
-      allDots.push({
-        x: point.x,
-        y: point.y,
-        group: groupName,
-        own_region: ownRegionName,
-        placement: "inside_own"
-      });
-    }
-  }
-
-  /*
-   * =========================================
-   * 12. 그룹별 외부 점 추가
-   * =========================================
-   */
-
-  function addOutsideDots(
-    allDots,
-    groupName,
-    count,
-    ownRegionName
-  ) {
-    const ownRegion =
-      REGIONS[ownRegionName];
-
-    for (let i = 0; i < count; i++) {
-      const point =
-        sampleOutsideOwnRegion(
-          ownRegion,
-          allDots
-        );
-
-      allDots.push({
-        x: point.x,
-        y: point.y,
-        group: groupName,
-        own_region: ownRegionName,
-        placement: "outside_own"
-      });
-    }
-  }
-
-  /*
-   * =========================================
-   * 13. 한 trial의 자극 생성
-   * =========================================
-   */
-
-  function generateStimulus(spec) {
-    /*
-     * 절반의 trial에서는 A가 왼쪽,
-     * 나머지 절반에서는 A가 오른쪽에 배치된다.
-     */
-
-    const groupARegion =
-      spec.side_assignment === "A_left"
-        ? "left"
-        : "right";
-
-    const groupBRegion =
-      spec.side_assignment === "A_left"
-        ? "right"
-        : "left";
-
-    const groupAInside =
-      insideCount(
-        spec.group_a_size,
-        spec.space_level
-      );
-
-    const groupBInside =
-      insideCount(
-        spec.group_b_size,
-        spec.space_level
-      );
-
-    const allDots = [];
-
-    /*
-     * 먼저 두 그룹의 내부 점을 배치한다.
-     */
-
-    addInsideDots(
-      allDots,
-      "A",
-      groupAInside,
-      groupARegion
-    );
-
-    addInsideDots(
-      allDots,
-      "B",
-      groupBInside,
-      groupBRegion
-    );
-
-    /*
-     * 남은 점을 자기 영역 밖에 배치한다.
-     */
-
-    addOutsideDots(
-      allDots,
-      "A",
-      spec.group_a_size -
-        groupAInside,
-      groupARegion
-    );
-
-    addOutsideDots(
-      allDots,
-      "B",
-      spec.group_b_size -
-        groupBInside,
-      groupBRegion
-    );
-
+  const blocks = core.buildMainBlocks();
+  core.validateTrialSchedule(blocks);
+  const practiceSpecs = core.buildPracticeSpecs();
+
+  function makeFixationTrial(spec, phase) {
     return {
-      dots:
-        jsPsych.randomization.shuffle(
-          allDots
-        ),
-
-      group_a_region:
-        groupARegion,
-
-      group_b_region:
-        groupBRegion,
-
-      group_a_inside:
-        groupAInside,
-
-      group_b_inside:
-        groupBInside,
-
-      inside_probability:
-        insideProbability(
-          spec.space_level
-        )
-    };
-  }
-
-  /*
-   * =========================================
-   * 14. 개발용 원형 경계
-   * =========================================
-   */
-
-  function drawRegionGuide(
-    context,
-    region
-  ) {
-    context.save();
-
-    context.strokeStyle =
-      "rgb(160, 160, 160)";
-
-    context.lineWidth = 2;
-    context.setLineDash([8, 6]);
-
-    context.beginPath();
-
-    context.arc(
-      region.centerX,
-      region.centerY,
-      region.radius,
-      0,
-      2 * Math.PI
-    );
-
-    context.stroke();
-    context.restore();
-  }
-
-  /*
-   * =========================================
-   * 15. Canvas에 점 그리기
-   * =========================================
-   */
-
-  function drawStimulus(
-    canvas,
-    stimulus,
-    colorLevel
-  ) {
-    const context =
-      canvas.getContext("2d");
-
-    const colors =
-      COLOR_LEVELS[colorLevel];
-
-    context.clearRect(
-      0,
-      0,
-      CANVAS_WIDTH,
-      CANVAS_HEIGHT
-    );
-
-    context.fillStyle =
-      "rgb(255, 255, 255)";
-
-    context.fillRect(
-      0,
-      0,
-      CANVAS_WIDTH,
-      CANVAS_HEIGHT
-    );
-
-    if (SHOW_REGION_GUIDES) {
-      drawRegionGuide(
-        context,
-        REGIONS.left
-      );
-
-      drawRegionGuide(
-        context,
-        REGIONS.right
-      );
-    }
-
-    for (const dot of stimulus.dots) {
-      const rgb =
-        dot.group === "A"
-          ? colors.groupA
-          : colors.groupB;
-
-      context.fillStyle =
-        rgbToCss(rgb);
-
-      context.beginPath();
-
-      context.arc(
-        dot.x,
-        dot.y,
-        DOT_RADIUS,
-        0,
-        2 * Math.PI
-      );
-
-      context.fill();
-    }
-  }
-
-  /*
-   * =========================================
-   * 16. 그룹 크기 조합 선택
-   * =========================================
-   */
-
-  function nextPair(
-    total,
-    pairStates
-  ) {
-    if (!pairStates[total]) {
-      pairStates[total] = {
-        queue:
-          jsPsych.randomization.shuffle(
-            VALID_GROUP_PAIRS[total].map(
-              function (pair) {
-                return pair.slice();
-              }
-            )
-          ),
-
-        index: 0
-      };
-    }
-
-    const state =
-      pairStates[total];
-
-    if (
-      state.index >=
-      state.queue.length
-    ) {
-      state.queue =
-        jsPsych.randomization.shuffle(
-          VALID_GROUP_PAIRS[total].map(
-            function (pair) {
-              return pair.slice();
-            }
-          )
-        );
-
-      state.index = 0;
-    }
-
-    const pair =
-      state.queue[state.index];
-
-    state.index++;
-
-    return pair;
-  }
-
-  /*
-   * =========================================
-   * 17-a. 색깔별 개수 균일 추출
-   * =========================================
-   *
-   * 3, 4, 5, 6을 각각 정확히
-   * TRIALS_PER_CONDITION / 4 = 5회씩
-   * A와 B에 대해 섞는다.
-   *
-   * 전체 400 trials 기준으로
-   * 색깔별로 각 개수가 정확히 200회씩 등장한다.
-   */
-
-  function buildPairsUniformGroupSize() {
-    const repetitions =
-      TRIALS_PER_CONDITION /
-      GROUP_SIZES.length;
-
-    if (
-      !Number.isInteger(repetitions)
-    ) {
-      throw new Error(
-        "TRIALS_PER_CONDITION이 색깔별 개수 종류 수로 나누어떨어지지 않습니다."
-      );
-    }
-
-    const sizesA = [];
-    const sizesB = [];
-
-    for (
-      let repetition = 0;
-      repetition < repetitions;
-      repetition++
-    ) {
-      for (const size of GROUP_SIZES) {
-        sizesA.push(size);
-        sizesB.push(size);
-      }
-    }
-
-    const shuffledA =
-      jsPsych.randomization.shuffle(
-        sizesA
-      );
-
-    const maximumAttempts = 10000;
-
-    for (
-      let attempt = 0;
-      attempt < maximumAttempts;
-      attempt++
-    ) {
-      const shuffledB =
-        jsPsych.randomization.shuffle(
-          sizesB
-        );
-
-      const allWithinLimit =
-        shuffledA.every(
-          function (sizeA, index) {
-            return sizeA + shuffledB[index] <= TOTAL_MAX;
-          }
-        );
-
-      if (allWithinLimit) {
-        return shuffledA.map(
-          function (sizeA, index) {
-            return [
-              sizeA,
-              shuffledB[index]
-            ];
-          }
-        );
-      }
-    }
-
-    throw new Error(
-      "합이 TOTAL_MAX 이하인 조합을 만들지 못했습니다."
-    );
-  }
-
-  /*
-   * =========================================
-   * 17-b. 전체 개수 균일 추출
-   * =========================================
-   *
-   * 6–12를 각각 3회 넣으면 21회가 되므로
-   * 조건마다 1개의 total을 순환 제거하여
-   * TRIALS_PER_CONDITION에 맞춘다.
-   */
-
-  function buildPairsUniformTotal(
-    conditionIndex
-  ) {
-    const repetitions =
-      Math.ceil(
-        TRIALS_PER_CONDITION /
-        TOTAL_COUNT
-      );
-
-    const totals = [];
-
-    for (
-      let repetition = 0;
-      repetition < repetitions;
-      repetition++
-    ) {
-      for (
-        let total = TOTAL_MIN;
-        total <= TOTAL_MAX;
-        total++
-      ) {
-        totals.push(total);
-      }
-    }
-
-    let surplus =
-      totals.length -
-      TRIALS_PER_CONDITION;
-
-    let offset =
-      conditionIndex;
-
-    while (surplus > 0) {
-      const omittedTotal =
-        TOTAL_MIN +
-        (
-          offset %
-          TOTAL_COUNT
-        );
-
-      totals.splice(
-        totals.indexOf(omittedTotal),
-        1
-      );
-
-      offset++;
-      surplus--;
-    }
-
-    const shuffledTotals =
-      jsPsych.randomization.shuffle(
-        totals
-      );
-
-    const pairStates = {};
-
-    return shuffledTotals.map(
-      function (total) {
-        return nextPair(
-          total,
-          pairStates
-        );
-      }
-    );
-  }
-
-  /*
-   * =========================================
-   * 17-c. 조건당 trial 생성
-   * =========================================
-   */
-
-  function buildConditionPool(
-    colorLevel,
-    spaceLevel,
-    conditionIndex
-  ) {
-    const pairs =
-      COUNT_SAMPLING === "uniform_total"
-        ? buildPairsUniformTotal(
-            conditionIndex
-          )
-        : buildPairsUniformGroupSize();
-
-    /*
-     * A-left와 A-right를
-     * 조건마다 절반씩 배치한다.
-     */
-    const half =
-      Math.floor(TRIALS_PER_CONDITION / 2);
-
-    const sideAssignments =
-      jsPsych.randomization.shuffle([
-        ...Array(half).fill("A_left"),
-        ...Array(TRIALS_PER_CONDITION - half).fill("A_right")
-      ]);
-
-    return pairs.map(
-      function (pair, index) {
-        return {
-          color_level:
-            colorLevel,
-
-          space_level:
-            spaceLevel,
-
-          condition:
-            `C${colorLevel}_S${spaceLevel}`,
-
-          condition_repeat:
-            index + 1,
-
-          sampling_scheme:
-            COUNT_SAMPLING,
-
-          group_a_size:
-            pair[0],
-
-          group_b_size:
-            pair[1],
-
-          total_dots:
-            pair[0] + pair[1],
-
-          side_assignment:
-            sideAssignments[index]
-        };
-      }
-    );
-  }
-
-  /*
-   * =========================================
-   * 18. 5개 block 생성
-   * =========================================
-   */
-
-  function buildMainBlocks() {
-    const blocks =
-      Array.from(
-        {
-          length:
-            BLOCK_COUNT
-        },
-
-        function () {
-          return [];
-        }
-      );
-
-    const perBlock =
-      TRIALS_PER_CONDITION /
-      BLOCK_COUNT;
-
-    let conditionIndex = 0;
-
-    /*
-     * Color 5 × Space 4
-     */
-    for (
-      let colorLevel = 1;
-      colorLevel <= 5;
-      colorLevel++
-    ) {
-      for (
-        let spaceLevel = 1;
-        spaceLevel <= 4;
-        spaceLevel++
-      ) {
-        const pool =
-          buildConditionPool(
-            colorLevel,
-            spaceLevel,
-            conditionIndex
-          );
-
-        /*
-         * 조건별 trial을
-         * 각 block에 고르게 나눈다.
-         */
-        for (
-          let blockIndex = 0;
-          blockIndex < BLOCK_COUNT;
-          blockIndex++
-        ) {
-          const first =
-            blockIndex * perBlock;
-
-          const last =
-            first + perBlock;
-
-          blocks[blockIndex].push(
-            ...pool.slice(
-              first,
-              last
-            )
-          );
-        }
-
-        conditionIndex++;
-      }
-    }
-
-    let mainTrialNumber = 1;
-
-    /*
-     * 각 block 안에서 무작위화
-     */
-    return blocks.map(
-      function (
-        block,
-        blockIndex
-      ) {
-        const shuffledBlock =
-          jsPsych.randomization.shuffle(
-            block
-          );
-
-        return shuffledBlock.map(
-          function (
-            spec,
-            withinBlockIndex
-          ) {
-            return {
-              ...spec,
-
-              block:
-                blockIndex + 1,
-
-              trial_in_block:
-                withinBlockIndex + 1,
-
-              main_trial_number:
-                mainTrialNumber++
-            };
-          }
-        );
-      }
-    );
-  }
-
-  /*
-   * =========================================
-   * 19. Fixation trial 생성
-   * =========================================
-   */
-
-  function makeFixationTrial(
-    spec,
-    phase
-  ) {
-    return {
-      type:
-        jsPsychHtmlKeyboardResponse,
-
-      stimulus:
-        '<div class="fixation">+</div>',
-
-      choices:
-        "NO_KEYS",
-
-      trial_duration:
-        FIXATION_DURATION,
-
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: '<div class="fixation">+</div>',
+      choices: 'NO_KEYS',
+      trial_duration: CFG.FIXATION_DURATION,
       data: {
-        phase:
-          `${phase}_fixation`,
-
-        block:
-          spec.block,
-
-        trial_in_block:
-          spec.trial_in_block,
-
-        main_trial_number:
-          spec.main_trial_number ||
-          null
+        phase: `${phase}_fixation`, block: spec.block,
+        trial_in_block: spec.trial_in_block,
+        main_trial_number: spec.main_trial_number || null
       }
     };
   }
 
-  /*
-   * =========================================
-   * 20. 점 판단 trial 생성
-   * =========================================
-   *
-   * 응답 방식: 한눈에 알아본 덩어리마다
-   * 그 개수를 숫자 키(1–9)로 누른다.
-   * 예) 3, 4, 3 -> 3 + 4 + 3 = 10
-   * Enter를 누르면 합계가 응답으로 제출된다.
-   */
+  function drawStimulus(canvas, stimulus) {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, CFG.CANVAS_WIDTH, CFG.CANVAS_HEIGHT);
+    const palette = { gray: CFG.COLORS.GRAY, red: CFG.COLORS.RED, cyan: CFG.COLORS.CYAN };
+    for (const p of stimulus.dots) {
+      const color = palette[p.color];
+      ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, CFG.DOT_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
 
-  function makeCountingNode(
-    spec,
-    phase,
-    includeFeedback
-  ) {
-    const canvasId =
-      `stimulus-${phase}-${randomId(8)}`;
-
-    const responseId =
-      `response-${phase}-${randomId(8)}`;
-
-    const errorId =
-      `error-${phase}-${randomId(8)}`;
-
+  function makeCountingNode(spec, phase, includeFeedback) {
+    const unique = randomId(8);
+    const canvasId = `stimulus-${unique}`;
+    const responseId = `response-${unique}`;
+    const errorId = `error-${unique}`;
     let stimulus = null;
-    let stimulusOnset = null;
-
-    let displayedWidth = null;
-    let displayedHeight = null;
-
-    let chunks = [];
-    let chunkTimes = [];
-    let undoCount = 0;
-
-    let activeKeyHandler = null;
+    let shownAt = null;
+    let width = null, height = null;
+    let chunks = [], chunkTimes = [], undoCount = 0;
+    let enterRT = null;
+    let finishedInput = false;
+    let handler = null;
     let trialResult = null;
 
-    const fixationTrial =
-      makeFixationTrial(
-        spec,
-        phase
-      );
-
-    const countingTrial = {
-      type:
-        jsPsychHtmlKeyboardResponse,
-
+    const trial = {
+      type: jsPsychHtmlKeyboardResponse,
       stimulus: function () {
-        stimulus =
-          generateStimulus(spec);
-
-        chunks = [];
-        chunkTimes = [];
-        undoCount = 0;
-
+        stimulus = core.generateStimulus(spec);
+        core.validateStimulus(spec, stimulus);
+        shownAt = null;
+        chunks = []; chunkTimes = []; undoCount = 0;
+        enterRT = null; finishedInput = false;
         return `
           <div class="trial-wrap">
-            <canvas
-              id="${canvasId}"
-              class="stimulus-canvas"
-              width="${CANVAS_WIDTH}"
-              height="${CANVAS_HEIGHT}"
-            ></canvas>
-
-            <div class="response-line">
-              입력:
-              <span
-                id="${responseId}"
-                class="response-box"
-              >0</span>
-            </div>
-
+            <canvas id="${canvasId}" class="stimulus-canvas"
+              width="${CFG.CANVAS_WIDTH}" height="${CFG.CANVAS_HEIGHT}"></canvas>
+            <div class="response-line">입력: <span id="${responseId}" class="response-box">0</span></div>
             <div class="response-hint">
-              한눈에 알아본 개수를 숫자 키로 차례로 누르고
-              <kbd>Enter</kbd>를 누르세요.
-              마지막 입력 취소는 <kbd>Backspace</kbd>.
+              보이는 각 덩어리의 개수를 숫자 키(1~9)로 차례로 누르고 <kbd>Enter</kbd>를 누르세요.<br>
+              예: 3, 4, 3으로 보이면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd> <kbd>Enter</kbd>.
+              <kbd>Backspace</kbd>로 마지막 입력 취소. (Space는 입력 구분용으로 눌러도 됩니다.)
             </div>
-
-            <div
-              id="${errorId}"
-              class="response-error"
-            ></div>
-          </div>
-        `;
+            <div id="${errorId}" class="response-error"></div>
+          </div>`;
       },
-
-      /*
-       * 키 입력은 아래의 event listener에서
-       * 직접 처리한다.
-       */
-      choices:
-        "NO_KEYS",
-
-      trial_duration:
-        RESPONSE_DEADLINE,
-
+      choices: 'NO_KEYS',
+      trial_duration: CFG.RESPONSE_DEADLINE,
       data: {
-        phase:
-          phase,
-
-        block:
-          spec.block,
-
-        trial_in_block:
-          spec.trial_in_block,
-
-        main_trial_number:
-          spec.main_trial_number ||
-          null,
-
-        condition:
-          spec.condition,
-
-        condition_repeat:
-          spec.condition_repeat ||
-          null,
-
-        sampling_scheme:
-          spec.sampling_scheme ||
-          null,
-
-        color_level:
-          spec.color_level,
-
-        space_level:
-          spec.space_level,
-
-        spatial_S:
-          SPACE_LEVELS[
-            spec.space_level
-          ],
-
-        group_a_size:
-          spec.group_a_size,
-
-        group_b_size:
-          spec.group_b_size,
-
-        total_dots:
-          spec.total_dots,
-
-        group_size_min:
-          GROUP_SIZE_MIN,
-
-        group_size_max:
-          GROUP_SIZE_MAX,
-
-        side_assignment:
-          spec.side_assignment,
-
-        color_a_rgb:
-          JSON.stringify(
-            COLOR_LEVELS[
-              spec.color_level
-            ].groupA
-          ),
-
-        color_b_rgb:
-          JSON.stringify(
-            COLOR_LEVELS[
-              spec.color_level
-            ].groupB
-          )
+        phase, block: spec.block, trial_in_block: spec.trial_in_block,
+        main_trial_number: spec.main_trial_number || null,
+        condition: spec.condition, n: spec.n, total_dots: spec.n,
+        spatial_condition: spec.condition.startsWith('C') ? 'clustered' : 'random_full_screen',
+        color_condition: ({ R1: 'gray', R2: 'separated', R3: 'random_mixed',
+          C1: 'gray', C2: 'congruent', C3: 'different_partition', C4: 'random_mixed' })[spec.condition],
+        spatial_partition_id: spec.spatial_partition_id,
+        color_partition_id: spec.color_partition_id,
+        spatial_partition: core.fmtPair(spec.spatial_partition),
+        color_partition: core.fmtPair(spec.color_partition),
+        side_assignment: spec.side_assignment || null,
+        color_variant: spec.color_variant === undefined ? null : spec.color_variant,
+        red_count: spec.red_count === undefined ? 0 : spec.red_count,
+        cyan_count: spec.cyan_count === undefined ? 0 : spec.cyan_count,
+        red_on_left: spec.red_on_left === undefined ? null : spec.red_on_left,
+        response_deadline_ms: CFG.RESPONSE_DEADLINE,
+        color_gray_rgb: JSON.stringify(CFG.COLORS.GRAY),
+        color_red_rgb: JSON.stringify(CFG.COLORS.RED),
+        color_cyan_rgb: JSON.stringify(CFG.COLORS.CYAN)
       },
-
-      /*
-       * 자극이 화면에 그려진 직후 실행
-       */
       on_load: function () {
-        const canvas =
-          document.getElementById(
-            canvasId
-          );
+        const canvas = document.getElementById(canvasId);
+        const responseElement = document.getElementById(responseId);
+        const errorElement = document.getElementById(errorId);
+        drawStimulus(canvas, stimulus);
+        const box = canvas.getBoundingClientRect();
+        width = box.width; height = box.height;
+        shownAt = performance.now();
 
-        const responseElement =
-          document.getElementById(
-            responseId
-          );
-
-        const errorElement =
-          document.getElementById(
-            errorId
-          );
-
-        drawStimulus(
-          canvas,
-          stimulus,
-          spec.color_level
-        );
-
-        const rectangle =
-          canvas.getBoundingClientRect();
-
-        displayedWidth =
-          rectangle.width;
-
-        displayedHeight =
-          rectangle.height;
-
-        /*
-         * 입력 현황을 "3 + 4 + 3 = 10" 형태로 표시
-         */
         function renderResponse() {
-          if (chunks.length === 0) {
-            responseElement.textContent = "0";
-            return;
+          responseElement.textContent = chunks.length
+            ? chunks.join(' + ') + ' = ' + chunks.reduce((a, b) => a + b, 0)
+            : '0';
+        }
+
+        handler = function (event) {
+          const isDigit = /^[1-9]$/.test(event.key) ||
+            /^Numpad[1-9]$/.test(event.code);
+          const isEnter = event.key === 'Enter' || event.code === 'NumpadEnter';
+          if (isDigit || isEnter || event.key === 'Backspace' || event.key === ' ') {
+            event.preventDefault();
+          } else return;
+          if (event.repeat || finishedInput) return;
+          if (performance.now() - shownAt >= CFG.RESPONSE_DEADLINE) return;
+
+          if (isDigit) {
+            const digit = Number(event.key);
+            if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
+            chunks.push(digit);
+            chunkTimes.push(Math.round(performance.now() - shownAt));
+            renderResponse();
+            errorElement.textContent = '';
+          } else if (event.key === 'Backspace') {
+            if (chunks.length) {
+              chunks.pop(); chunkTimes.pop(); undoCount++;
+            }
+            renderResponse();
+            errorElement.textContent = '';
+          } else if (isEnter) {
+            if (!chunks.length) {
+              errorElement.textContent = '알아본 개수를 숫자 키로 입력한 뒤 Enter를 누르세요.';
+              return;
+            }
+            enterRT = Math.round(performance.now() - shownAt);
+            finishedInput = true;
+            errorElement.style.color = '#26733b';
+            errorElement.textContent = '입력이 완료되었습니다. 점은 4초가 끝날 때까지 표시됩니다.';
           }
-
-          responseElement.textContent =
-            chunks.join(" + ") +
-            " = " +
-            sumOf(chunks);
-        }
-
-        /*
-         * 실제 점이 그려진 직후부터
-         * RT 측정을 시작한다.
-         */
-        stimulusOnset =
-          performance.now();
-
-        activeKeyHandler =
-          function (event) {
-            /*
-             * 숫자 키(1–9): 덩어리 하나 추가
-             * 꾹 누르고 있어도 한 번만 센다.
-             */
-            if (/^[1-9]$/.test(event.key)) {
-              event.preventDefault();
-
-              if (event.repeat) {
-                return;
-              }
-
-              chunks.push(
-                Number(event.key)
-              );
-
-              chunkTimes.push(
-                Math.round(
-                  performance.now() -
-                  stimulusOnset
-                )
-              );
-
-              renderResponse();
-
-              errorElement.textContent =
-                "";
-
-              return;
-            }
-
-            /*
-             * Backspace: 마지막 덩어리 취소
-             */
-            if (event.key === "Backspace") {
-              event.preventDefault();
-
-              if (event.repeat) {
-                return;
-              }
-
-              if (chunks.length > 0) {
-                chunks.pop();
-                chunkTimes.pop();
-                undoCount += 1;
-              }
-
-              renderResponse();
-
-              errorElement.textContent =
-                "";
-
-              return;
-            }
-
-            /*
-             * Enter: 합계 제출
-             */
-            if (event.key === "Enter") {
-              event.preventDefault();
-
-              if (chunks.length > 0) {
-                const responseTime =
-                  performance.now() -
-                  stimulusOnset;
-
-                jsPsych.finishTrial({
-                  response:
-                    sumOf(chunks),
-
-                  rt:
-                    responseTime
-                });
-              } else {
-                errorElement.textContent =
-                  "알아본 개수를 숫자 키로 누른 뒤 Enter를 누르세요.";
-              }
-            }
-          };
-
-        window.addEventListener(
-          "keydown",
-          activeKeyHandler
-        );
-      },
-
-      /*
-       * 응답 후 데이터 계산
-       */
-      on_finish: function (data) {
-        if (activeKeyHandler) {
-          window.removeEventListener(
-            "keydown",
-            activeKeyHandler
-          );
-        }
-
-        const estimate =
-          data.response === null ||
-          data.response === undefined
-            ? null
-            : Number(
-                data.response
-              );
-
-        data.estimate =
-          estimate;
-
-        /*
-         * 시간 초과 시 그때까지 입력한 합계
-         */
-        data.partial_response =
-          estimate === null && chunks.length > 0
-            ? sumOf(chunks)
-            : null;
-
-        data.responded =
-          estimate !== null;
-
-        data.timed_out =
-          estimate === null;
-
-        data.correct =
-          estimate === null
-            ? null
-            : estimate ===
-              spec.total_dots;
-
-        data.signed_error =
-          estimate === null
-            ? null
-            : estimate -
-              spec.total_dots;
-
-        data.absolute_error =
-          estimate === null
-            ? null
-            : Math.abs(
-                estimate -
-                spec.total_dots
-              );
-
-        data.rt_stimulus_ms =
-          data.rt;
-
-        /*
-         * 덩어리 기록
-         *   chunks: 누른 숫자들, 예) [3,4,3]
-         *   n_chunks: 덩어리 개수
-         *   chunk_times: 자극 제시 후 각 숫자를 누른 시점(ms)
-         *   first_chunk_rt: 첫 숫자까지 걸린 시간
-         *   undo_count: Backspace로 취소한 횟수
-         */
-        data.chunks =
-          JSON.stringify(chunks);
-
-        data.n_chunks =
-          chunks.length;
-
-        data.chunk_times =
-          JSON.stringify(chunkTimes);
-
-        data.first_chunk_rt =
-          chunkTimes.length > 0
-            ? chunkTimes[0]
-            : null;
-
-        data.undo_count =
-          undoCount;
-
-        /*
-         * 자극 생성 정보
-         */
-        data.p0 =
-          P0;
-
-        data.inside_probability =
-          stimulus.inside_probability;
-
-        data.group_a_region =
-          stimulus.group_a_region;
-
-        data.group_b_region =
-          stimulus.group_b_region;
-
-        data.group_a_inside =
-          stimulus.group_a_inside;
-
-        data.group_b_inside =
-          stimulus.group_b_inside;
-
-        data.canvas_logical_width =
-          CANVAS_WIDTH;
-
-        data.canvas_logical_height =
-          CANVAS_HEIGHT;
-
-        data.canvas_displayed_width =
-          displayedWidth;
-
-        data.canvas_displayed_height =
-          displayedHeight;
-
-        data.dot_radius =
-          DOT_RADIUS;
-
-        data.minimum_dot_distance =
-          MIN_DISTANCE;
-
-        /*
-         * 참가자가 실제로 본 모든 점의 좌표.
-         *
-         * 전송 시 dots 탭으로 풀어 쓰기 위해
-         * 축약 키로 저장한다.
-         *   g: group, r: own_region
-         *   p: 1이면 자기 영역 내부, 0이면 외부
-         */
-        data.dot_positions =
-          JSON.stringify(
-            stimulus.dots.map(
-              function (dot) {
-                return {
-                  x: Math.round(dot.x * 10) / 10,
-                  y: Math.round(dot.y * 10) / 10,
-                  g: dot.group,
-                  r: dot.own_region,
-                  p: dot.placement === "inside_own" ? 1 : 0
-                };
-              }
-            )
-          );
-
-        trialResult = {
-          estimate:
-            estimate,
-
-          correctAnswer:
-            spec.total_dots,
-
-          timedOut:
-            estimate === null
         };
+        window.addEventListener('keydown', handler, { capture: true });
+      },
+      on_finish: function (data) {
+        if (handler) window.removeEventListener('keydown', handler, { capture: true });
+        const total = chunks.reduce((a, b) => a + b, 0);
+        const responded = finishedInput;
+        const estimate = responded ? total : null;
+        data.response = estimate;
+        data.rt = responded ? enterRT : null;
+        data.estimate = estimate;
+        data.responded = responded;
+        data.timed_out = !responded;
+        data.correct = responded ? estimate === spec.n : null;
+        data.signed_error = responded ? estimate - spec.n : null;
+        data.absolute_error = responded ? Math.abs(estimate - spec.n) : null;
+        data.partial_response = !responded && chunks.length ? total : null;
+        data.partial_chunks = !responded ? JSON.stringify(chunks) : null;
+        data.chunks = JSON.stringify(chunks);
+        data.n_chunks = chunks.length;
+        data.chunk_times = JSON.stringify(chunkTimes);
+        data.first_chunk_rt = chunkTimes.length ? chunkTimes[0] : null;
+        data.undo_count = undoCount;
+        data.response_raw = chunks.join(' ');
+        data.response_status = responded ? 'submitted' : 'timeout';
+        const geo = stimulus.geometry;
+        data.hull_area = geo.hull_area;
+        data.mean_nn_all = geo.mean_nn_all;
+        data.within_cluster_mean_nn = geo.within_cluster_mean_nn;
+        data.cross_cluster_min_distance = geo.cross_cluster_min_distance;
+        data.spatial_ratio_actual = geo.spatial_ratio_actual;
+        data.max_center_distance = geo.max_center_distance;
+        const cm = stimulus.cluster_meta;
+        data.grid_left = cm ? cm.grid_left : null;
+        data.grid_right = cm ? cm.grid_right : null;
+        data.center_left_x = cm ? cm.center_left.x : null;
+        data.center_left_y = cm ? cm.center_left.y : null;
+        data.center_right_x = cm ? cm.center_right.x : null;
+        data.center_right_y = cm ? cm.center_right.y : null;
+        data.radius_left = cm ? cm.radius_left : null;
+        data.radius_right = cm ? cm.radius_right : null;
+        data.center_distance = cm ? cm.center_distance : null;
+        data.canvas_logical_width = CFG.CANVAS_WIDTH;
+        data.canvas_logical_height = CFG.CANVAS_HEIGHT;
+        data.canvas_displayed_width = width;
+        data.canvas_displayed_height = height;
+        data.dot_radius = CFG.DOT_RADIUS;
+        data.minimum_dot_distance = CFG.MIN_DISTANCE;
+        data.dot_positions = JSON.stringify(stimulus.dots.map(p => ({
+          x: Math.round(p.x * 10) / 10,
+          y: Math.round(p.y * 10) / 10,
+          cluster: p.cluster,
+          color: p.color,
+          grid_cell: p.grid_cell,
+          side: p.side
+        })));
+        trialResult = { estimate, correctAnswer: spec.n, timedOut: !responded };
       }
     };
 
-    const nodeTimeline = [
-      fixationTrial,
-      countingTrial
-    ];
-
-    /*
-     * 연습 시행에서만 피드백 제시
-     */
+    const timeline = [makeFixationTrial(spec, phase), trial];
     if (includeFeedback) {
-      nodeTimeline.push({
-        type:
-          jsPsychHtmlKeyboardResponse,
-
+      timeline.push({
+        type: jsPsychHtmlKeyboardResponse,
         stimulus: function () {
-          if (
-            trialResult.timedOut
-          ) {
-            return `
-              <div class="experiment-text">
-                <p>
-                  시간 안에 응답하지 못했습니다.
-                </p>
-
-                <p>
-                  정답은
-                  <strong>
-                    ${trialResult.correctAnswer}
-                  </strong>개였습니다.
-                </p>
-              </div>
-            `;
-          }
-
-          return `
-            <div class="experiment-text">
-              <p>
-                응답:
-                <strong>
-                  ${trialResult.estimate}
-                </strong>개
-              </p>
-
-              <p>
-                정답:
-                <strong>
-                  ${trialResult.correctAnswer}
-                </strong>개
-              </p>
-            </div>
-          `;
+          if (trialResult.timedOut) return `
+            <div class="experiment-text"><p>시간 안에 응답하지 못했습니다.</p>
+              <p>정답은 <strong>${trialResult.correctAnswer}</strong>개였습니다.</p></div>`;
+          return `<div class="experiment-text">
+            <p>응답: <strong>${trialResult.estimate}</strong>개</p>
+            <p>정답: <strong>${trialResult.correctAnswer}</strong>개</p></div>`;
         },
-
-        choices:
-          "NO_KEYS",
-
-        trial_duration:
-          1000,
-
-        data: {
-          phase:
-            "practice_feedback"
-        }
+        choices: 'NO_KEYS', trial_duration: 1000,
+        data: { phase: 'practice_feedback' }
       });
     }
-
-    return {
-      timeline:
-        nodeTimeline
-    };
+    return { timeline };
   }
-
-  /*
-   * =========================================
-   * 21. Block 시작 화면
-   * =========================================
-   */
-
-  function makeBlockIntro(
-    blockNumber
-  ) {
-    const message =
-      blockNumber === 1
-        ? "본실험을 시작합니다."
-        : "잠시 쉬어도 좋습니다. 준비되면 다음 block을 시작하세요.";
-
-    return {
-      type:
-        jsPsychHtmlKeyboardResponse,
-
-      stimulus: `
-        <div class="experiment-text">
-          <h2>
-            Block ${blockNumber} /
-            ${BLOCK_COUNT}
-          </h2>
-
-          <p>${message}</p>
-
-          <p>
-            이 block에는
-            ${TRIALS_PER_BLOCK}개의
-            trial이 있습니다.
-          </p>
-
-          <p>
-            준비되면 스페이스바를 누르세요.
-          </p>
-        </div>
-      `,
-
-      choices:
-        [" "],
-
-      data: {
-        phase:
-          "block_start",
-
-        block:
-          blockNumber
-      }
-    };
-  }
-
-  /*
-   * =========================================
-   * 22. 참가자 번호 입력
-   * =========================================
-   */
 
   const participantTrial = {
-    type:
-      jsPsychSurveyHtmlForm,
-
-    preamble: `
-      <div class="experiment-text">
-        <h2>참가자 정보</h2>
-
-        <p>
-          이름 대신 연구자가 부여한
-          참가자 번호를 입력하세요.
-        </p>
-      </div>
-    `,
-
-    html: `
-      <p>
-        <label>
-          참가자 번호:
-
-          <input
-            name="participant_id"
-            type="text"
-            required
-            maxlength="40"
-            autocomplete="off"
-          >
-        </label>
-      </p>
-    `,
-
-    button_label:
-      "계속",
-
-    data: {
-      phase:
-        "participant_info"
-    },
-
+    type: jsPsychSurveyHtmlForm,
+    preamble: `<div class="experiment-text"><h2>참가자 정보</h2>
+      <p>참가자 이름을 입력하세요.</p></div>`,
+    html: `<p><label>참가자 이름:
+      <input id="participant-name" name="participant_id" type="text" required maxlength="40" autocomplete="off">
+      </label></p>`,
+    autofocus: 'participant-name',
+    button_label: '계속',
+    data: { phase: 'participant_info' },
     on_finish: function (data) {
-      participantId =
-        String(
-          data.response.participant_id
-        ).trim();
-
-      /*
-       * 모든 trial에 공통으로 저장할 정보
-       */
+      participantId = String(data.response.participant_id).trim();
       jsPsych.data.addProperties({
-        participant_id:
-          participantId,
-
-        session_id:
-          sessionId,
-
-        experiment_version:
-          EXPERIMENT_VERSION,
-
-        sampling_scheme_global:
-          COUNT_SAMPLING,
-
-        started_at_iso:
-          new Date().toISOString(),
-
-        screen_width:
-          window.screen.width,
-
-        screen_height:
-          window.screen.height,
-
-        viewport_width:
-          window.innerWidth,
-
-        viewport_height:
-          window.innerHeight,
-
-        device_pixel_ratio:
-          window.devicePixelRatio,
-
-        user_agent:
-          navigator.userAgent
+        participant_id: participantId, session_id: sessionId,
+        experiment_version: EXPERIMENT_VERSION,
+        started_at_iso: startISO,
+        screen_width: window.screen.width, screen_height: window.screen.height,
+        viewport_width: window.innerWidth, viewport_height: window.innerHeight,
+        device_pixel_ratio: window.devicePixelRatio,
+        user_agent: navigator.userAgent
       });
     }
   };
 
-  /*
-   * =========================================
-   * 23. 과제 설명
-   * =========================================
-   */
-
   const instructionTrial = {
-    type:
-      jsPsychHtmlKeyboardResponse,
-
-    stimulus: `
-      <div class="experiment-text">
-        <h2>과제 안내</h2>
-
-        <p>
-          화면에 여러 개의 점이 나타납니다.
-        </p>
-
-        <p>
-          점의 색과 관계없이
-          <strong>모든 점</strong>의 개수를 세어 주세요.
-        </p>
-
-        <p>
-          한눈에 알아본 점 개수를
-          숫자 키로 차례로 누르세요.
-          예를 들어 3개, 4개, 3개로 보였다면
-          <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd>을 누르면
-          합계 10이 자동으로 계산됩니다.
-        </p>
-
-        <p>
-          다 눌렀으면 <kbd>Enter</kbd>를 누르세요.
-          합계가 응답으로 제출됩니다.
-        </p>
-
-        <p>
-          잘못 눌렀으면
-          <kbd>Backspace</kbd>로
-          마지막 입력을 취소할 수 있습니다.
-        </p>
-
-        <p>
-          전체 점 개수는
-          ${TOTAL_MIN}개부터 ${TOTAL_MAX}개 사이입니다.
-        </p>
-
-        <p>
-          점 배열이 나타난 뒤
-          ${RESPONSE_DEADLINE / 1000}초 안에 응답해야 합니다.
-        </p>
-
-        <p>
-          정확하고 빠르게 응답해 주세요.
-        </p>
-
-        <p>
-          먼저 4회의 연습을 진행합니다.
-        </p>
-
-        <p>
-          준비되면 스페이스바를 누르세요.
-        </p>
-      </div>
-    `,
-
-    choices:
-      [" "],
-
-    data: {
-      phase:
-        "instructions"
-    }
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="experiment-text"><h2>과제 안내</h2>
+      <p>화면에 여러 개의 점이 나타납니다.</p>
+      <p>점의 색과 관계없이 <strong>모든 점</strong>의 개수를 세어 주세요.</p>
+      <p>한눈에 알아본 점 개수를 숫자 키로 차례로 누르세요.<br>
+      예를 들어 3개, 4개, 3개로 보였다면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd>을 누르면 합계 10이 자동으로 계산됩니다.</p>
+      <p>다 눌렀으면 <kbd>Enter</kbd>를 누르세요. 합계가 응답으로 제출됩니다.</p>
+      <p>잘못 눌렀으면 <kbd>Backspace</kbd>로 마지막 입력을 취소할 수 있습니다.</p>
+      <p>전체 점 개수는 <strong>8개부터 12개</strong> 사이입니다.</p>
+      <p><strong>점은 4초 동안 계속 보이며, 그 안에 Enter까지 눌러야 합니다.</strong><br>
+      먼저 Enter를 눌러도 남은 시간 동안 점은 그대로 표시됩니다.</p>
+      <p>정확하고 빠르게 응답해 주세요.</p>
+      <p>먼저 <strong>4회의 연습</strong>을 진행합니다.</p>
+      <p>준비되면 스페이스바를 누르세요.</p></div>`,
+    choices: [' '], data: { phase: 'instructions' }
   };
 
-  /*
-   * =========================================
-   * 24. 연습 시행
-   * =========================================
-   *
-   * 색깔별 개수는 3–6,
-   * 전체 개수는 6–12 범위에 맞춘다.
-   */
-
-  const practiceSpecs = [
-    {
-      block: 0,
-      trial_in_block: 1,
-
-      condition:
-        "practice_C1_S1",
-
-      color_level: 1,
-      space_level: 1,
-
-      group_a_size: 6,
-      group_b_size: 5,
-
-      total_dots: 11,
-
-      side_assignment:
-        "A_left"
-    },
-
-    {
-      block: 0,
-      trial_in_block: 2,
-
-      condition:
-        "practice_C5_S4",
-
-      color_level: 5,
-      space_level: 4,
-
-      group_a_size: 4,
-      group_b_size: 3,
-
-      total_dots: 7,
-
-      side_assignment:
-        "A_right"
-    },
-
-    {
-      block: 0,
-      trial_in_block: 3,
-
-      condition:
-        "practice_C3_S2",
-
-      color_level: 3,
-      space_level: 2,
-
-      group_a_size: 5,
-      group_b_size: 4,
-
-      total_dots: 9,
-
-      side_assignment:
-        "A_left"
-    },
-
-    {
-      block: 0,
-      trial_in_block: 4,
-
-      condition:
-        "practice_C2_S3",
-
-      color_level: 2,
-      space_level: 3,
-
-      group_a_size: 4,
-      group_b_size: 6,
-
-      total_dots: 10,
-
-      side_assignment:
-        "A_right"
-    }
-  ];
-
-  /*
-   * 연습 자극이 현재 범위를 벗어나지
-   * 않는지 확인한다.
-   */
-  for (const spec of practiceSpecs) {
-    const validSizes =
-      spec.group_a_size >= GROUP_SIZE_MIN &&
-      spec.group_a_size <= GROUP_SIZE_MAX &&
-      spec.group_b_size >= GROUP_SIZE_MIN &&
-      spec.group_b_size <= GROUP_SIZE_MAX;
-
-    const validTotal =
-      spec.total_dots ===
-        spec.group_a_size + spec.group_b_size &&
-      spec.total_dots <= TOTAL_MAX;
-
-    if (!validSizes || !validTotal) {
-      throw new Error(
-        `연습 자극 설정 오류: ${spec.condition}`
-      );
-    }
-  }
-
-  /*
-   * =========================================
-   * 25. 본실험 block 생성
-   * =========================================
-   */
-
-  const mainBlocks =
-    buildMainBlocks();
-
-  const totalMainTrials =
-    mainBlocks.reduce(
-      function (
-        total,
-        block
-      ) {
-        return (
-          total +
-          block.length
-        );
-      },
-
-      0
-    );
-
-  const expectedMainTrials =
-    BLOCK_COUNT *
-    TRIALS_PER_BLOCK;
-
-  /*
-   * 총 trial 수 검사
-   */
-  if (
-    totalMainTrials !==
-    expectedMainTrials
-  ) {
-    throw new Error(
-      `본실험 trial 수 오류: ${totalMainTrials} (기대값 ${expectedMainTrials})`
-    );
-  }
-
-  /*
-   * 색깔별 개수 분포 검사
-   * (uniform_group_size일 때만)
-   */
-  if (
-    COUNT_SAMPLING ===
-    "uniform_group_size"
-  ) {
-    const sizeCounts = {};
-
-    for (const block of mainBlocks) {
-      for (const spec of block) {
-        sizeCounts[spec.group_a_size] =
-          (sizeCounts[spec.group_a_size] || 0) + 1;
-
-        sizeCounts[spec.group_b_size] =
-          (sizeCounts[spec.group_b_size] || 0) + 1;
-      }
-    }
-
-    const expectedPerSize =
-      2 *
-      expectedMainTrials /
-      GROUP_SIZES.length;
-
-    for (const size of GROUP_SIZES) {
-      if (
-        sizeCounts[size] !==
-        expectedPerSize
-      ) {
-        throw new Error(
-          `색깔별 개수 분포 오류: ${size} -> ${sizeCounts[size]}`
-        );
-      }
-    }
-  }
-
-  /*
-   * =========================================
-   * 26. 전체 timeline 구성
-   * =========================================
-   */
-
-  const timeline = [
-    participantTrial,
-    instructionTrial
-  ];
-
-  /*
-   * 연습 trial 추가
-   */
-  for (
-    const practiceSpec of
-    practiceSpecs
-  ) {
-    timeline.push(
-      makeCountingNode(
-        practiceSpec,
-        "practice",
-        true
-      )
-    );
-  }
-
-  /*
-   * 연습 종료 화면
-   */
+  const timeline = [participantTrial, instructionTrial];
+  for (const spec of practiceSpecs) timeline.push(makeCountingNode(spec, 'practice', true));
   timeline.push({
-    type:
-      jsPsychHtmlKeyboardResponse,
-
-    stimulus: `
-      <div class="experiment-text">
-        <h2>연습이 끝났습니다.</h2>
-
-        <p>
-          이제 본실험 ${expectedMainTrials} trials를
-          시작합니다.
-        </p>
-
-        <p>
-          본실험에서는 정답을
-          알려주지 않습니다.
-        </p>
-
-        <p>
-          준비되면 스페이스바를 누르세요.
-        </p>
-      </div>
-    `,
-
-    choices:
-      [" "],
-
-    data: {
-      phase:
-        "practice_end"
-    }
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="experiment-text"><h2>연습이 끝났습니다.</h2>
+      <p>이제 본실험 <strong>420회</strong>를 시작합니다.</p>
+      <p>본실험에서는 정답을 알려주지 않습니다.</p>
+      <p>준비되면 스페이스바를 누르세요.</p></div>`,
+    choices: [' '], data: { phase: 'practice_end' }
   });
 
-  /*
-   * 5개 block 추가
-   */
-  mainBlocks.forEach(
-    function (
-      block,
-      blockIndex
-    ) {
-      timeline.push(
-        makeBlockIntro(
-          blockIndex + 1
-        )
-      );
-
-      for (const spec of block) {
-        timeline.push(
-          makeCountingNode(
-            spec,
-            "main",
-            false
-          )
-        );
-      }
-    }
-  );
-
-  /*
-   * =========================================
-   * 27. 종료 화면
-   * =========================================
-   *
-   * 실제 데이터 전송은 3절의
-   * initJsPsych on_finish에서 처리한다.
-   */
-
-  timeline.push({
-    type:
-      jsPsychHtmlKeyboardResponse,
-
-    stimulus: `
-      <div class="experiment-text">
-        <h2>모든 시행이 끝났습니다.</h2>
-
-        <p>
-          스페이스바를 누르면
-          데이터가 전송됩니다.
-        </p>
-
-        <p>
-          전송이 끝날 때까지
-          창을 닫지 마세요.
-        </p>
-      </div>
-    `,
-
-    choices:
-      [" "],
-
-    data: {
-      phase:
-        "experiment_end"
-    }
+  blocks.forEach((block, index) => {
+    const number = index + 1;
+    timeline.push({
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div class="experiment-text"><h2>Block ${number} / ${CFG.BLOCK_COUNT}</h2>
+        <p>${number === 1 ? '본실험을 시작합니다.' : '잠시 쉬어도 좋습니다. 준비되면 다음 block을 시작하세요.'}</p>
+        <p>이 block에는 ${CFG.TRIALS_PER_BLOCK}개의 trial이 있습니다.</p>
+        <p>준비되면 스페이스바를 누르세요.</p></div>`,
+      choices: [' '], data: { phase: 'block_start', block: number }
+    });
+    for (const spec of block) timeline.push(makeCountingNode(spec, 'main', false));
   });
 
-  /*
-   * =========================================
-   * 28. 실험 실행
-   * =========================================
-   */
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="experiment-text"><h2>모든 시행이 끝났습니다.</h2>
+      <p>스페이스바를 누르면 데이터가 전송됩니다.</p>
+      <p>전송이 끝날 때까지 창을 닫지 마세요.</p></div>`,
+    choices: [' '], data: { phase: 'experiment_end' }
+  });
 
   jsPsych.run(timeline);
 </script>
