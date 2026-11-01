@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Groupitizing Experiment</title>
+  <script src="https://unpkg.com/jspsych@8.3.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.2.0"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@2.1.0"></script>
+  <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet">
+  <script>
+/* Groupitizing experiment - testable, browser-independent trial design and stimulus generation.
+ * Use Math.random for spatial sampling; grid selections are independent uniform draws (no balancing).
+ */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  root.GroupitizingCore = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const CONFIG = Object.freeze({
+    VERSION: '2.0.0',
+    CANVAS_WIDTH: 960,
+    CANVAS_HEIGHT: 540,
+    DOT_RADIUS: 7,
+    MIN_DISTANCE: 25,
+    MARGIN: 20,
+    CLUSTER_RADIUS_MIN: 65,
+    CLUSTER_RADIUS_MAX: 135,
+    CLUSTER_BOUNDARY_GAP: 8,
+    FIXATION_DURATION: 1000,
+    RESPONSE_DEADLINE: 4000,
+    ITI_DURATION: 300,
+    BLOCK_COUNT: 8,
+    TRIALS_PER_BLOCK: 60,
+    PRACTICE_COUNT: 4,
+    COLORS: Object.freeze({
+      GRAY: [128, 128, 128],
+      RED: [255, 0, 0],
+      CYAN: [0, 255, 255]
+    })
+  });
+
+  const N_VALUES = Object.freeze([8, 9, 10, 11, 12]);
+  const CONDITION_IDS = Object.freeze(['R1', 'R2', 'R3', 'C1', 'C2', 'C3']);
+  const PARTITIONS = Object.freeze({
+    8: [[3, 5], [4, 4]],
+    9: [[3, 6], [4, 5]],
+    10: [[4, 6], [5, 5]],
+    11: [[4, 7], [5, 6]],
+    12: [[5, 7], [6, 6]]
+  });
+
+  const isClusterCondition = condition => condition.startsWith('C');
+  const isColorCondition = condition => !['R1', 'C1'].includes(condition);
+  const randomInt = (n, rng = Math.random) => Math.floor(rng() * n);
+  const randomRange = (a, b, rng = Math.random) => a + (b - a) * rng();
+  const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  const sum = array => array.reduce((a, b) => a + b, 0);
+  const fmtPair = pair => pair ? pair.join('+') : '';
+
+  function shuffle(items, rng = Math.random) {
+    const out = items.slice();
+    for (let i = out.length - 1; i > 0; i--) {
+      const j = randomInt(i + 1, rng);
+      [out[i], out[j]] = [out[j], out[i]];
+    }
+    return out;
+  }
+
+  // Exactly 2 trials of each condition × N per block, across 8 blocks.
+  // Each applicable spatial/color partition occurs 8 times per condition × N.
+  function buildMainBlocks(rng = Math.random) {
+    const blocks = Array.from({ length: CONFIG.BLOCK_COUNT }, () => []);
+    for (const n of N_VALUES) {
+      for (const condition of CONDITION_IDS) {
+        const slots = Array.from({ length: CONFIG.BLOCK_COUNT }, () => []);
+        for (let b = 0; b < CONFIG.BLOCK_COUNT; b++) {
+          for (let p = 0; p < 2; p++) {
+            slots[b].push({
+              spatial_partition_id: isClusterCondition(condition) ? p : null,
+              color_partition_id: isColorCondition(condition)
+                ? (condition === 'C3' ? 1 - p : p)
+                : null
+            });
+          }
+        }
+
+        const specs = [];
+        for (let b = 0; b < CONFIG.BLOCK_COUNT; b++) {
+          for (const slot of slots[b]) {
+            specs.push({
+              phase: 'main',
+              n,
+              condition,
+              block: b + 1,
+              spatial_partition_id: slot.spatial_partition_id,
+              color_partition_id: slot.color_partition_id
+            });
+          }
+        }
+
+        // C2/C3: within each 8-trial spatial partition, balance the 2×2
+        // side-assignment × red-cluster (color_variant) table to exactly 2
+        // trials per cell. This gives A-left 4:4, color variants 4:4, and
+        // red-dominant left/right 4:4 per partition (8:8 across 16 trials).
+        if (condition === 'C2' || condition === 'C3') {
+          for (let sp = 0; sp < 2; sp++) {
+            const group = shuffle(specs.filter(s => s.spatial_partition_id === sp), rng);
+            const dirs = shuffle([...'LLLLRRRR'], rng);
+            group.forEach((s, i) => { s.side_assignment = dirs[i] === 'L' ? 'A_left' : 'A_right'; });
+            const aLeft = shuffle(group.filter(s => s.side_assignment === 'A_left'), rng);
+            const aRight = shuffle(group.filter(s => s.side_assignment === 'A_right'), rng);
+            aLeft.forEach((s, i) => { s.color_variant = i < 2 ? 0 : 1; });
+            aRight.forEach((s, i) => { s.color_variant = i < 2 ? 0 : 1; });
+          }
+        } else {
+          // Keep independently shuffled spatial/color allocations for other conditions.
+          for (let sp = 0; sp < 2; sp++) {
+            const group = specs.filter(s => s.spatial_partition_id === sp);
+            if (group.length === 0) continue;
+            if (group.length % 2) throw new Error('Odd spatial partition count');
+            const directions = shuffle([
+              ...Array(group.length / 2).fill('A_left'),
+              ...Array(group.length / 2).fill('A_right')
+            ], rng);
+            group.forEach((s, i) => { s.side_assignment = directions[i]; });
+          }
+          for (let cp = 0; cp < 2; cp++) {
+            const group = specs.filter(s => s.color_partition_id === cp);
+            if (group.length === 0) continue;
+            if (group.length % 2) throw new Error('Odd color partition count');
+            const variants = shuffle([
+              ...Array(group.length / 2).fill(0),
+              ...Array(group.length / 2).fill(1)
+            ], rng);
+            group.forEach((s, i) => { s.color_variant = variants[i]; });
+          }
+        }
+
+        // Compute exact red and cyan counts from the already-balanced variants.
+        // In both C2 and C3 the dominant-red cluster is variant0 -> group A,
+        // variant1 -> group B (C3's ties are resolved this way below).
+        specs.forEach(s => {
+          if (s.color_partition_id === null) return;
+          s.red_count = PARTITIONS[n][s.color_partition_id][s.color_variant];
+          s.cyan_count = n - s.red_count;
+          if (condition === 'C2' || condition === 'C3') {
+            const redCluster = s.color_variant;
+            const leftCluster = s.side_assignment === 'A_left' ? 0 : 1;
+            s.red_on_left = redCluster === leftCluster;
+          }
+        });
+
+        // R2: cross color variant × red's left/right assignment evenly.
+        // Each color partition has 8 trials, 4 per color variant; each
+        // of the four variant × side cells appears exactly twice.
+        if (condition === 'R2') {
+          for (let cp = 0; cp < 2; cp++) {
+            const group = specs.filter(s => s.color_partition_id === cp);
+            const first = shuffle(group.filter(s => s.color_variant === 0), rng);
+            const second = shuffle(group.filter(s => s.color_variant === 1), rng);
+            first.forEach((s, i) => { s.red_on_left = i < 2; });
+            second.forEach((s, i) => { s.red_on_left = i < 2; });
+          }
+        }
+
+        specs.forEach(s => {
+          if (s.spatial_partition_id !== null) {
+            s.spatial_partition = PARTITIONS[n][s.spatial_partition_id].slice();
+          } else {
+            s.spatial_partition = null;
+          }
+          s.color_partition = s.color_partition_id !== null
+            ? PARTITIONS[n][s.color_partition_id].slice() : null;
+          blocks[s.block - 1].push(s);
+        });
+      }
+    }
+
+    let trialNumber = 1;
+    return blocks.map((block, i) => shuffle(block, rng).map((s, j) => ({
+      ...s,
+      block: i + 1,
+      trial_in_block: j + 1,
+      main_trial_number: trialNumber++,
+      condition_repeat: null
+    })));
+  }
+
+  // Practice: four representative examples, same generator and response deadline.
+  function buildPracticeSpecs() {
+    return [
+      { n: 8, condition: 'R1', spatial_partition_id: null, color_partition_id: null },
+      { n: 9, condition: 'R2', spatial_partition_id: null, color_partition_id: 1, color_variant: 0, red_count: 4, cyan_count: 5, red_on_left: true },
+      { n: 10, condition: 'C2', spatial_partition_id: 1, color_partition_id: 1, color_variant: 0, red_count: 5, cyan_count: 5, side_assignment: 'A_left', red_on_left: true },
+      { n: 12, condition: 'C3', spatial_partition_id: 0, color_partition_id: 1, color_variant: 0, red_count: 6, cyan_count: 6, side_assignment: 'A_right', red_on_left: false }
+    ].map((s, i) => ({
+      ...s,
+      phase: 'practice', block: 0, trial_in_block: i + 1, main_trial_number: null,
+      spatial_partition: s.spatial_partition_id === null ? null : PARTITIONS[s.n][s.spatial_partition_id].slice(),
+      color_partition: s.color_partition_id === null ? null : PARTITIONS[s.n][s.color_partition_id].slice()
+    }));
+  }
+
+  function validateTrialSchedule(blocks) {
+    if (blocks.length !== CONFIG.BLOCK_COUNT ||
+        blocks.some(b => b.length !== CONFIG.TRIALS_PER_BLOCK)) {
+      throw new Error('Expected 8 × 60 trials');
+    }
+    const rows = blocks.flat();
+    if (rows.length !== 480 || rows.some(s => !CONDITION_IDS.includes(s.condition))) {
+      throw new Error('Wrong trial count or unknown condition');
+    }
+    for (const n of N_VALUES) {
+      for (const condition of CONDITION_IDS) {
+        const group = rows.filter(s => s.n === n && s.condition === condition);
+        if (group.length !== 16) throw new Error(`Expected 16 repetitions for ${n}/${condition}`);
+        for (let b = 1; b <= CONFIG.BLOCK_COUNT; b++) {
+          if (group.filter(s => s.block === b).length !== 2) throw new Error('Unbalanced block');
+        }
+        for (let cp = 0; cp < 2; cp++) {
+          const sub = group.filter(s => s.color_partition_id === cp);
+          if (sub.length) {
+            if (sub.length !== 8 || sub.filter(s => s.color_variant === 0).length !== 4 ||
+                sub.filter(s => s.color_variant === 1).length !== 4) throw new Error('Color direction imbalance');
+          }
+        }
+        for (let sp = 0; sp < 2; sp++) {
+          const sub = group.filter(s => s.spatial_partition_id === sp);
+          if (sub.length && (sub.length !== 8 || sub.filter(s => s.side_assignment === 'A_left').length !== 4)) {
+            throw new Error('Spatial direction imbalance');
+          }
+        }
+        if (condition === 'C2' || condition === 'C3') {
+          if (group.filter(s => s.red_on_left).length !== 8) {
+            throw new Error('C2/C3 red-dominant left-right imbalance');
+          }
+          for (let sp = 0; sp < 2; sp++) {
+            const sub = group.filter(s => s.spatial_partition_id === sp);
+            if (sub.filter(s => s.red_on_left).length !== 4) {
+              throw new Error('Crossed spatial/color allocation imbalance');
+            }
+            for (const side of ['A_left', 'A_right']) {
+              for (let v = 0; v < 2; v++) {
+                const count = sub.filter(s => s.side_assignment === side && s.color_variant === v).length;
+                if (count !== 2) throw new Error('Side/color joint cell imbalance');
+              }
+            }
+          }
+        }
+        if (condition === 'R2') {
+          for (let cp = 0; cp < 2; cp++) {
+            const sub = group.filter(s => s.color_partition_id === cp);
+            if (sub.filter(s => s.red_on_left).length !== 4) {
+              throw new Error('R2 side imbalance');
+            }
+            for (let variant = 0; variant < 2; variant++) {
+              const joint = sub.filter(s => s.color_variant === variant && s.red_on_left).length;
+              if (joint !== 2) throw new Error('R2 side/color joint imbalance');
+            }
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  function sampleUniform(n, rng) {
+    const points = [];
+    for (let i = 0; i < n; i++) {
+      let added = false;
+      for (let attempt = 0; attempt < 15000; attempt++) {
+        const candidate = {
+          x: randomRange(CONFIG.MARGIN + CONFIG.DOT_RADIUS,
+            CONFIG.CANVAS_WIDTH - CONFIG.MARGIN - CONFIG.DOT_RADIUS, rng),
+          y: randomRange(CONFIG.MARGIN + CONFIG.DOT_RADIUS,
+            CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - CONFIG.DOT_RADIUS, rng),
+          cluster: -1, grid_cell: null, side: null
+        };
+        if (points.every(q => distance(q, candidate) >= CONFIG.MIN_DISTANCE)) {
+          points.push(candidate);
+          added = true;
+          break;
+        }
+      }
+      if (!added) throw new Error('Cannot generate full-screen random points');
+    }
+    return { dots: points, cluster_meta: null };
+  }
+
+  // One of the 4 cells (2x2 per half) is drawn independently and uniformly for each cluster.
+  // Keep sampled cell IDs fixed when resampling positions/radii.
+  function gridBounds(side, cell) {
+    const row = Math.floor(cell / 2);
+    const col = cell % 2;
+    const x0 = side === 'left' ? 0 : CONFIG.CANVAS_WIDTH / 2;
+    const cellW = CONFIG.CANVAS_WIDTH / 4;
+    const cellH = CONFIG.CANVAS_HEIGHT / 2;
+    return {
+      minX: x0 + col * cellW,
+      maxX: x0 + (col + 1) * cellW,
+      minY: row * cellH,
+      maxY: (row + 1) * cellH
+    };
+  }
+
+  function sampleCenterInCell(side, cell, rng) {
+    const b = gridBounds(side, cell);
+    const pad = CONFIG.CLUSTER_RADIUS_MIN + CONFIG.CLUSTER_BOUNDARY_GAP + CONFIG.DOT_RADIUS;
+    const halfMin = side === 'left' ? 0 : CONFIG.CANVAS_WIDTH / 2;
+    const halfMax = side === 'left' ? CONFIG.CANVAS_WIDTH / 2 : CONFIG.CANVAS_WIDTH;
+    const minX = Math.max(b.minX, halfMin + CONFIG.MARGIN + pad);
+    const maxX = Math.min(b.maxX, halfMax - CONFIG.MARGIN - pad);
+    const minY = Math.max(b.minY, CONFIG.MARGIN + pad);
+    const maxY = Math.min(b.maxY, CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - pad);
+    if (minX > maxX || minY > maxY) throw new Error('Cluster center grid has no feasible region');
+    return { x: randomRange(minX, maxX, rng), y: randomRange(minY, maxY, rng) };
+  }
+
+  function maxRadiusAt(center, side) {
+    const w = CONFIG.CANVAS_WIDTH;
+    const h = CONFIG.CANVAS_HEIGHT;
+    const p = CONFIG.DOT_RADIUS + CONFIG.CLUSTER_BOUNDARY_GAP + CONFIG.MARGIN;
+    const halfMin = side === 'left' ? 0 : w / 2;
+    const halfMax = side === 'left' ? w / 2 : w;
+    return Math.min(CONFIG.CLUSTER_RADIUS_MAX,
+      center.x - halfMin - p, halfMax - center.x - p,
+      center.y - p, h - center.y - p);
+  }
+
+  function sampleClusterPoints(center, radius, count, cluster, side, gridCell, rng) {
+    const out = [];
+    for (let i = 0; i < count; i++) {
+      let found = false;
+      for (let attempt = 0; attempt < 10000; attempt++) {
+        const a = rng() * Math.PI * 2;
+        const r = radius * Math.sqrt(rng());
+        const p = {
+          x: center.x + r * Math.cos(a),
+          y: center.y + r * Math.sin(a),
+          cluster, side, grid_cell: gridCell + 1
+        };
+        if (out.every(q => distance(p, q) >= CONFIG.MIN_DISTANCE)) {
+          out.push(p);
+          found = true;
+          break;
+        }
+      }
+      if (!found) return null;
+    }
+    return out;
+  }
+
+  function sampleClusters(spec, rng) {
+    const cells = [randomInt(4, rng), randomInt(4, rng)]; // 0-based, independent 2x2 choices
+    for (let attempt = 0; attempt < 4000; attempt++) {
+      const leftCenter = sampleCenterInCell('left', cells[0], rng);
+      const rightCenter = sampleCenterInCell('right', cells[1], rng);
+      const d = distance(leftCenter, rightCenter);
+      const leftMax = maxRadiusAt(leftCenter, 'left');
+      const rightMax = maxRadiusAt(rightCenter, 'right');
+      if (leftMax < CONFIG.CLUSTER_RADIUS_MIN || rightMax < CONFIG.CLUSTER_RADIUS_MIN) continue;
+      // Each cluster's radius is bounded within its own half-screen.
+      // Therefore the two enclosing circles already have at least 70px separation;
+      // an additional inter-cluster gap check is redundant.
+      const leftRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, leftMax, rng);
+      const rightRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, rightMax, rng);
+      const aLeft = spec.side_assignment === 'A_left';
+      const sizeLeft = spec.spatial_partition[aLeft ? 0 : 1];
+      const sizeRight = spec.spatial_partition[aLeft ? 1 : 0];
+      const leftDots = sampleClusterPoints(leftCenter, leftRadius, sizeLeft,
+        aLeft ? 0 : 1, 'left', cells[0], rng);
+      if (!leftDots) continue;
+      const rightDots = sampleClusterPoints(rightCenter, rightRadius, sizeRight,
+        aLeft ? 1 : 0, 'right', cells[1], rng);
+      if (!rightDots) continue;
+      // Enclosing circles guarantee inter-cluster separation; check anyway.
+      if (leftDots.some(a => rightDots.some(b => distance(a, b) < CONFIG.MIN_DISTANCE))) continue;
+      return {
+        dots: leftDots.concat(rightDots),
+        cluster_meta: {
+          grid_left: cells[0] + 1,
+          grid_right: cells[1] + 1,
+          center_left: leftCenter,
+          center_right: rightCenter,
+          radius_left: leftRadius,
+          radius_right: rightRadius,
+          center_distance: d
+        }
+      };
+    }
+    throw new Error(`Cannot place cluster centers inside fixed cells ${cells[0]+1},${cells[1]+1}`);
+  }
+
+  function assignColors(spec, dots, clusterMeta, rng) {
+    const n = dots.length;
+    const labels = Array(n).fill('gray');
+    if (!isColorCondition(spec.condition)) return labels;
+    const redCount = spec.red_count;
+    if (spec.condition === 'R2') {
+      const order = dots.map((_, i) => i).sort((a, b) => dots[a].x - dots[b].x);
+      const leftCount = spec.red_on_left ? redCount : n - redCount;
+      order.forEach((idx, rank) => { labels[idx] = rank < leftCount
+        ? (spec.red_on_left ? 'red' : 'cyan') : (spec.red_on_left ? 'cyan' : 'red'); });
+    } else if (spec.condition === 'R3') {
+      // Pure random color labels, excluding the two completely x-separated cases.
+      let found = false;
+      for (let attempt = 0; attempt < 500; attempt++) {
+        const indexes = shuffle(Array.from({ length: n }, (_, i) => i), rng);
+        labels.fill('cyan');
+        indexes.slice(0, redCount).forEach(i => { labels[i] = 'red'; });
+        const ordered = dots.map((_, i) => i).sort((a, b) => dots[a].x - dots[b].x);
+        const sequence = ordered.map(i => labels[i]);
+        const transitions = sequence.slice(1).filter((color, i) => color !== sequence[i]).length;
+        if (transitions >= 2) { found = true; break; }
+      }
+      if (!found) throw new Error('Cannot make R3 mixed color labels');
+    } else if (spec.condition === 'C2') {
+      const [a, b] = spec.spatial_partition;
+      const redCluster = a === b ? spec.color_variant : (redCount === a ? 0 : 1);
+      dots.forEach((p, i) => { labels[i] = p.cluster === redCluster ? 'red' : 'cyan'; });
+    } else if (spec.condition === 'C3') {
+      // Find the monochrome-cluster assignment that requires exactly one flip.
+      const [a, b] = spec.spatial_partition;
+      const options = [a, b].map((size, k) => ({ cluster: k, flips: Math.abs(redCount - size) }));
+      const minimum = Math.min(...options.map(o => o.flips));
+      const candidates = options.filter(o => o.flips === minimum);
+      if (minimum !== 1) throw new Error('C3 must differ by exactly one dot');
+      // Keep the red-majority side balanced across the schedule.
+      // In ambiguous cases both choices require one color flip; choose the
+      // color_variant cluster rather than drawing it independently at random.
+      const redCluster = spec.color_variant;
+      if (!candidates.some(o => o.cluster === redCluster)) {
+        throw new Error('C3 red cluster incompatible with the color partition');
+      }
+      dots.forEach((p, i) => { labels[i] = p.cluster === redCluster ? 'red' : 'cyan'; });
+      const currentRed = labels.filter(c => c === 'red').length;
+      const changeFrom = currentRed < redCount ? 'cyan' : 'red';
+      const possible = dots.map((_, i) => i).filter(i => labels[i] === changeFrom);
+        // Choose the one mismatching point at the spatial boundary:
+        // among points of the cluster that must lose a color, select the
+        // point whose (x,y) position is closest to the OPPOSITE cluster center.
+        // Use Euclidean distance on both axes, not a random point.
+        if (!clusterMeta) throw new Error('C3 requires cluster centers');
+        const sourceCluster = dots[possible[0]].cluster;
+        if (!possible.every(i => dots[i].cluster === sourceCluster)) {
+          throw new Error('C3 flip candidates must belong to one cluster');
+        }
+        const otherCenter = dots[possible[0]].side === 'left'
+          ? clusterMeta.center_right : clusterMeta.center_left;
+        let closestIndex = possible[0];
+        for (const i of possible.slice(1)) {
+          if (distance(dots[i], otherCenter) < distance(dots[closestIndex], otherCenter)) {
+            closestIndex = i;
+          }
+        }
+        labels[closestIndex] = changeFrom === 'red' ? 'cyan' : 'red';
+    } else {
+      throw new Error(`Unknown condition ${spec.condition}`);
+    }
+    if (labels.filter(c => c === 'red').length !== redCount) throw new Error('Wrong red count');
+    return labels;
+  }
+
+  function meanNN(points) {
+    if (!points || points.length < 2) return null;
+    return sum(points.map((p, i) => Math.min(...points.filter((_, j) => i !== j).map(q => distance(p, q))))) / points.length;
+  }
+
+  function convexHullArea(points) {
+    if (points.length < 3) return 0;
+    const sorted = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
+    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    function half(list) {
+      const h = [];
+      for (const p of list) {
+        while (h.length >= 2 && cross(h[h.length-2], h[h.length-1], p) <= 0) h.pop();
+        h.push(p);
+      }
+      return h;
+    }
+    const hull = half(sorted).slice(0,-1).concat(half(sorted.slice().reverse()).slice(0,-1));
+    return Math.abs(hull.reduce((acc,p,i) => acc + p.x * hull[(i+1)%hull.length].y - p.y * hull[(i+1)%hull.length].x,0))/2;
+  }
+
+  function generateStimulus(spec, rng = Math.random) {
+    const geometry = isClusterCondition(spec.condition) ? sampleClusters(spec, rng) : sampleUniform(spec.n, rng);
+    const labels = assignColors(spec, geometry.dots, geometry.cluster_meta, rng);
+    const dots = shuffle(geometry.dots.map((p, i) => ({ ...p, color: labels[i] })), rng);
+    const within = [0, 1].map(k => meanNN(dots.filter(p => p.cluster === k)));
+    const cross = isClusterCondition(spec.condition)
+      ? Math.min(...dots.filter(p => p.cluster === 0).flatMap(a =>
+        dots.filter(p => p.cluster === 1).map(b => distance(a,b)))) : null;
+    const ratio = isClusterCondition(spec.condition) ? cross / ((within[0] + within[1])/2) : null;
+    const spread = Math.max(...dots.map(p => Math.hypot(p.x - CONFIG.CANVAS_WIDTH/2, p.y - CONFIG.CANVAS_HEIGHT/2)));
+    return {
+      dots,
+      cluster_meta: geometry.cluster_meta,
+      geometry: {
+        hull_area: convexHullArea(dots),
+        mean_nn_all: meanNN(dots),
+        cross_cluster_min_distance: cross,
+        within_cluster_mean_nn: isClusterCondition(spec.condition) ? (within[0] + within[1])/2 : null,
+        spatial_ratio_actual: ratio,
+        max_center_distance: spread
+      }
+    };
+  }
+
+  function validateStimulus(spec, stim) {
+    const dots = stim.dots;
+    if (dots.length !== spec.n) throw new Error('Wrong total dot count');
+    for (let i = 0; i < dots.length; i++) {
+      const p = dots[i];
+      if (p.x < CONFIG.MARGIN || p.x > CONFIG.CANVAS_WIDTH-CONFIG.MARGIN ||
+          p.y < CONFIG.MARGIN || p.y > CONFIG.CANVAS_HEIGHT-CONFIG.MARGIN) throw new Error('Out of canvas');
+      for (let j = 0; j < i; j++) if (distance(p,dots[j]) < CONFIG.MIN_DISTANCE-1e-7) throw new Error('Overlapping dots');
+    }
+    if (isColorCondition(spec.condition)) {
+      if (dots.filter(p => p.color === 'red').length !== spec.red_count) throw new Error('Wrong red allocation');
+    } else if (dots.some(p => p.color !== 'gray')) throw new Error('Gray condition has colors');
+    if (isClusterCondition(spec.condition)) {
+      for (let k = 0; k < 2; k++) {
+        if (dots.filter(p => p.cluster === k).length !== spec.spatial_partition[k]) throw new Error('Wrong cluster size');
+      }
+      if (spec.condition === 'C2' && [0,1].some(k => new Set(dots.filter(p => p.cluster === k).map(p => p.color)).size !== 1)) throw new Error('C2 not aligned');
+      if (spec.condition === 'C3') {
+        const mixed = [0,1].filter(k => new Set(dots.filter(p => p.cluster === k).map(p => p.color)).size > 1);
+        if (mixed.length !== 1) throw new Error('C3 must have one mixed cluster');
+      }
+    } else if (dots.some(p => p.cluster !== -1)) throw new Error('Random condition has clusters');
+    return true;
+  }
+
+  return { CONFIG, N_VALUES, CONDITION_IDS, PARTITIONS, fmtPair, shuffle,
+    buildMainBlocks, buildPracticeSpecs, validateTrialSchedule,
+    generateStimulus, validateStimulus };
+});
+
+</script>
+  <style>
+    body { margin: 0; background: white; color: #111; }
+    .experiment-text { max-width: 760px; margin: 0 auto; font-size: 20px; line-height: 1.65; padding: 0 16px; }
+    .experiment-text h2 { margin-bottom: 14px; }
+    .fixation { font-size: 64px; line-height: 1; }
+    .trial-wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; }
+    .stimulus-canvas { display: block; width: min(92vw, 120vh, 960px); height: auto; background: white; }
+    .response-line { min-height: 44px; line-height: 44px; font-size: 25px; }
+    .response-box { display: inline-block; min-width: 72px; margin-left: 8px; padding: 0 10px; border-bottom: 2px solid #222; font-weight: bold; letter-spacing: 1px; }
+    .response-hint { font-size: 16px; color: #555; text-align: center; max-width: 900px; }
+    .response-error { min-height: 24px; color: #a00018; font-size: 16px; }
+    kbd { display: inline-block; padding: 2px 7px; border: 1px solid #aaa; border-radius: 4px; background: #f4f4f4; font-family: inherit; }
+    .small-note { color: #666; font-size: 16px; }
+  </style>
+</head>
+<body></body>
+<script>
+  'use strict';
+  /* GitHub Pages용 브라우저 JavaScript 실험. 기존 jsPsych 8.3.0 스타일·전송 형식 유지. */
+  const core = GroupitizingCore;
+  const CFG = core.CONFIG;
+  const EXPERIMENT_VERSION = CFG.VERSION;
+
+  // 기존 파일에 포함된 Google Apps Script 웹 앱 설정을 유지.
+  // 주의: 공개 GitHub 저장소의 이 값은 비밀이 아닙니다. 운영 전 접근 제어를 반드시 점검하세요.
+  const SAVE_URL = 'https://script.google.com/macros/s/AKfycbx7B4yDoEn0z73eTvkGulvDcG9AX0D69Y7bkkiO8tWH6gsqQPysuwb42szJ6btggX8_/exec';
+  const SAVE_SECRET = 'minseo0605';
+
+  const TRIAL_COLUMNS = [
+    'phase', 'block', 'trial_in_block', 'main_trial_number',
+    'condition', 'n', 'total_dots', 'spatial_condition', 'color_condition',
+    'spatial_partition_id', 'color_partition_id', 'spatial_partition', 'color_partition',
+    'side_assignment', 'color_variant', 'red_count', 'cyan_count', 'red_on_left',
+    'grid_left', 'grid_right', 'center_left_x', 'center_left_y',
+    'center_right_x', 'center_right_y', 'radius_left', 'radius_right',
+    'center_distance', 'hull_area', 'mean_nn_all', 'within_cluster_mean_nn',
+    'cross_cluster_min_distance', 'spatial_ratio_actual', 'max_center_distance',
+    'estimate', 'responded', 'timed_out', 'correct', 'signed_error', 'absolute_error', 'rt',
+    'chunks', 'n_chunks', 'chunk_times', 'first_chunk_rt', 'undo_count',
+    'partial_response', 'partial_chunks', 'response_raw', 'response_status',
+    'response_deadline_ms', 'color_gray_rgb', 'color_red_rgb', 'color_cyan_rgb',
+    'canvas_logical_width', 'canvas_logical_height', 'canvas_displayed_width',
+    'canvas_displayed_height', 'dot_radius', 'minimum_dot_distance', 'time_elapsed'
+  ];
+  const DOT_COLUMNS = [
+    'phase', 'block', 'trial_in_block', 'main_trial_number', 'condition',
+    'dot_index', 'x', 'y', 'cluster', 'color', 'grid_cell', 'side'
+  ];
+  const SESSION_KEYS = [
+    'participant_id', 'session_id', 'experiment_version',
+    'started_at_iso', 'screen_width', 'screen_height', 'viewport_width',
+    'viewport_height', 'device_pixel_ratio', 'user_agent'
+  ];
+
+  const cell = value => {
+    if (value === null || value === undefined) return '';
+    if (typeof value === 'boolean') return value ? 1 : 0;
+    return value;
+  };
+  const safeFilename = value => String(value).trim()
+    .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'participant';
+  const randomId = (length = 12) => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    const bytes = new Uint32Array(length);
+    crypto.getRandomValues(bytes);
+    return [...bytes].map(v => chars[v % chars.length]).join('');
+  };
+  const sessionId = randomId();
+  let participantId = 'anonymous';
+  const startISO = new Date().toISOString();
+
+  const jsPsych = initJsPsych({
+    on_finish: async function () {
+      document.body.innerHTML = `
+        <div class="experiment-text">
+          <h2>데이터를 전송하고 있습니다.</h2>
+          <p>전송이 끝날 때까지 창을 닫지 마세요.</p>
+        </div>`;
+
+      const rows = jsPsych.data.get().filter([
+        { phase: 'main' }, { phase: 'practice' }
+      ]).values();
+      const trialRows = rows.map(r => TRIAL_COLUMNS.map(column => cell(r[column])));
+      const dotRows = [];
+      for (const r of rows) {
+        let dots;
+        try { dots = JSON.parse(r.dot_positions || '[]'); }
+        catch (error) { console.error('점 좌표 데이터 읽기 오류', error); dots = []; }
+        dots.forEach((dot, i) => dotRows.push([
+          cell(r.phase), cell(r.block), cell(r.trial_in_block),
+          cell(r.main_trial_number), cell(r.condition), i + 1,
+          dot.x, dot.y, dot.cluster, dot.color, cell(dot.grid_cell), cell(dot.side)
+        ]));
+      }
+      const firstRow = jsPsych.data.get().values()[0] || {};
+      const sessionRows = SESSION_KEYS.map(k => [k, cell(firstRow[k])]);
+      const main = jsPsych.data.get().filter({ phase: 'main' });
+      const mainCount = main.count();
+      sessionRows.push(
+        ['n_main_trials', mainCount],
+        ['n_responded', main.filter({ responded: true }).count()],
+        ['n_timed_out', main.filter({ timed_out: true }).count()],
+        ['accuracy_all_trials', mainCount ? main.filter({ correct: true }).count() / mainCount : 0],
+        ['n_practice_trials', rows.filter(r => r.phase === 'practice').length],
+        ['canvas_width', CFG.CANVAS_WIDTH],
+        ['canvas_height', CFG.CANVAS_HEIGHT],
+        ['stimulus_duration_ms', CFG.RESPONSE_DEADLINE],
+        ['grid_sampling', 'independent_uniform_2x2_per_half_unbalanced'],
+        ['color_calibration', 'none_fixed_RGB'],
+        ['finished_at_iso', new Date().toISOString()]
+      );
+      const payload = {
+        secret: SAVE_SECRET,
+        filename: ['groupitizing', safeFilename(participantId), sessionId].join('_'),
+        trial_columns: TRIAL_COLUMNS,
+        trial_rows: trialRows,
+        dot_columns: DOT_COLUMNS,
+        dot_rows: dotRows,
+        session_rows: sessionRows
+      };
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+          const response = await fetch(SAVE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+          });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const result = await response.json();
+          if (result.status !== 'ok') throw new Error(result.message || '서버 저장 실패');
+          document.body.innerHTML = `
+            <div class="experiment-text"><h2>실험이 종료되었습니다.</h2>
+              <p>데이터가 정상적으로 저장되었습니다.</p>
+              <p>참여해 주셔서 감사합니다.</p>
+            </div>`;
+          return;
+        } catch (error) {
+          console.error(`저장 시도 ${attempt}/3 실패`, error);
+          if (attempt < 3) await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
+        }
+      }
+      document.body.innerHTML = `
+        <div class="experiment-text"><h2>전송에 실패했습니다.</h2>
+          <p>브라우저에 파일을 내려받습니다. 파일을 연구자에게 전달해 주세요.</p>
+          <p class="small-note">다운로드가 차단되었다면 브라우저의 다운로드 권한을 허용하세요.</p>
+        </div>`;
+      // Original CSV backup, plus full payload JSON (including per-dot rows).
+      jsPsych.data.get().localSave('csv', payload.filename + '.csv');
+      try {
+        const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = payload.filename + '_full.json';
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
+      } catch (error) { console.error('JSON 백업 오류', error); }
+    }
+  });
+
+  const blocks = core.buildMainBlocks();
+  core.validateTrialSchedule(blocks);
+  const practiceSpecs = core.buildPracticeSpecs();
+
+  function makeFixationTrial(spec, phase) {
+    return {
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: '<div class="fixation">+</div>',
+      choices: 'NO_KEYS',
+      trial_duration: CFG.FIXATION_DURATION,
+      data: {
+        phase: `${phase}_fixation`, block: spec.block,
+        trial_in_block: spec.trial_in_block,
+        main_trial_number: spec.main_trial_number || null
+      }
+    };
+  }
+
+  function drawStimulus(canvas, stimulus) {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, CFG.CANVAS_WIDTH, CFG.CANVAS_HEIGHT);
+    const palette = { gray: CFG.COLORS.GRAY, red: CFG.COLORS.RED, cyan: CFG.COLORS.CYAN };
+    for (const p of stimulus.dots) {
+      const color = palette[p.color];
+      ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, CFG.DOT_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function makeCountingNode(spec, phase, includeFeedback) {
+    const unique = randomId(8);
+    const canvasId = `stimulus-${unique}`;
+    const responseId = `response-${unique}`;
+    const errorId = `error-${unique}`;
+    let stimulus = null;
+    let shownAt = null;
+    let width = null, height = null;
+    let chunks = [], chunkTimes = [], undoCount = 0;
+    let enterRT = null;
+    let finishedInput = false;
+    let handler = null;
+    let trialResult = null;
+
+    const trial = {
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: function () {
+        stimulus = core.generateStimulus(spec);
+        core.validateStimulus(spec, stimulus);
+        shownAt = null;
+        chunks = []; chunkTimes = []; undoCount = 0;
+        enterRT = null; finishedInput = false;
+        return `
+          <div class="trial-wrap">
+            <canvas id="${canvasId}" class="stimulus-canvas"
+              width="${CFG.CANVAS_WIDTH}" height="${CFG.CANVAS_HEIGHT}"></canvas>
+            <div class="response-line">입력: <span id="${responseId}" class="response-box">—</span></div>
+            <div class="response-hint">
+              보이는 각 덩어리의 개수를 숫자 키(1~9)로 차례로 누르고 <kbd>Enter</kbd>를 누르세요.<br>
+              예: 3, 4, 3으로 보이면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd> <kbd>Enter</kbd>.
+              <kbd>Backspace</kbd>로 마지막 입력 취소. (Space는 입력 구분용으로 눌러도 됩니다.)
+            </div>
+            <div id="${errorId}" class="response-error"></div>
+          </div>`;
+      },
+      choices: 'NO_KEYS',
+      trial_duration: CFG.RESPONSE_DEADLINE,
+      post_trial_gap: CFG.ITI_DURATION, // Blank 300 ms after response/timeout, before next phase.
+      data: {
+        phase, block: spec.block, trial_in_block: spec.trial_in_block,
+        main_trial_number: spec.main_trial_number || null,
+        condition: spec.condition, n: spec.n, total_dots: spec.n,
+        spatial_condition: spec.condition.startsWith('C') ? 'clustered' : 'random_full_screen',
+        color_condition: ({ R1: 'gray', R2: 'separated', R3: 'random_mixed',
+          C1: 'gray', C2: 'congruent', C3: 'different_partition' })[spec.condition],
+        spatial_partition_id: spec.spatial_partition_id,
+        color_partition_id: spec.color_partition_id,
+        spatial_partition: core.fmtPair(spec.spatial_partition),
+        color_partition: core.fmtPair(spec.color_partition),
+        side_assignment: spec.side_assignment || null,
+        color_variant: spec.color_variant === undefined ? null : spec.color_variant,
+        red_count: spec.red_count === undefined ? 0 : spec.red_count,
+        cyan_count: spec.cyan_count === undefined ? 0 : spec.cyan_count,
+        red_on_left: spec.red_on_left === undefined ? null : spec.red_on_left,
+        response_deadline_ms: CFG.RESPONSE_DEADLINE,
+        color_gray_rgb: JSON.stringify(CFG.COLORS.GRAY),
+        color_red_rgb: JSON.stringify(CFG.COLORS.RED),
+        color_cyan_rgb: JSON.stringify(CFG.COLORS.CYAN)
+      },
+      on_load: function () {
+        const canvas = document.getElementById(canvasId);
+        const responseElement = document.getElementById(responseId);
+        const errorElement = document.getElementById(errorId);
+        drawStimulus(canvas, stimulus);
+        const box = canvas.getBoundingClientRect();
+        width = box.width; height = box.height;
+        shownAt = performance.now();
+
+        function renderResponse() {
+          // Show the reported chunks, but do NOT reveal their running sum.
+          // Only the saved response is summed when Enter is pressed.
+          responseElement.textContent = chunks.length ? chunks.join(' + ') : '—';
+        }
+
+        handler = function (event) {
+          const isDigit = /^[1-9]$/.test(event.key) ||
+            /^Numpad[1-9]$/.test(event.code);
+          const isEnter = event.key === 'Enter' || event.code === 'NumpadEnter';
+          if (isDigit || isEnter || event.key === 'Backspace' || event.key === ' ') {
+            event.preventDefault();
+          } else return;
+          if (event.repeat || finishedInput) return;
+          if (performance.now() - shownAt >= CFG.RESPONSE_DEADLINE) return;
+
+          if (isDigit) {
+            const digit = Number(event.key);
+            if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
+            chunks.push(digit);
+            chunkTimes.push(Math.round(performance.now() - shownAt));
+            renderResponse();
+            errorElement.textContent = '';
+          } else if (event.key === 'Backspace') {
+            if (chunks.length) {
+              chunks.pop(); chunkTimes.pop(); undoCount++;
+            }
+            renderResponse();
+            errorElement.textContent = '';
+          } else if (isEnter) {
+            if (!chunks.length) {
+              errorElement.textContent = '알아본 개수를 숫자 키로 입력한 뒤 Enter를 누르세요.';
+              return;
+            }
+            enterRT = Math.round(performance.now() - shownAt);
+            finishedInput = true;
+            // 4초 이내에 제출했다면 제한시간 종료를 기다리지 않고 즉시 다음 시행으로 이동.
+            // on_finish에서 그룹별 입력값, RT 및 정답 여부를 기존대로 기록한다.
+            jsPsych.finishTrial({
+              response: chunks.reduce((a, b) => a + b, 0),
+              rt: enterRT
+            });
+          }
+        };
+        window.addEventListener('keydown', handler, { capture: true });
+      },
+      on_finish: function (data) {
+        if (handler) window.removeEventListener('keydown', handler, { capture: true });
+        const total = chunks.reduce((a, b) => a + b, 0);
+        const responded = finishedInput;
+        const estimate = responded ? total : null;
+        data.response = estimate;
+        data.rt = responded ? enterRT : null;
+        data.estimate = estimate;
+        data.responded = responded;
+        data.timed_out = !responded;
+        data.correct = responded ? estimate === spec.n : null;
+        data.signed_error = responded ? estimate - spec.n : null;
+        data.absolute_error = responded ? Math.abs(estimate - spec.n) : null;
+        data.partial_response = !responded && chunks.length ? total : null;
+        data.partial_chunks = !responded ? JSON.stringify(chunks) : null;
+        data.chunks = JSON.stringify(chunks);
+        data.n_chunks = chunks.length;
+        data.chunk_times = JSON.stringify(chunkTimes);
+        data.first_chunk_rt = chunkTimes.length ? chunkTimes[0] : null;
+        data.undo_count = undoCount;
+        data.response_raw = chunks.join(' ');
+        data.response_status = responded ? 'submitted' : 'timeout';
+        const geo = stimulus.geometry;
+        data.hull_area = geo.hull_area;
+        data.mean_nn_all = geo.mean_nn_all;
+        data.within_cluster_mean_nn = geo.within_cluster_mean_nn;
+        data.cross_cluster_min_distance = geo.cross_cluster_min_distance;
+        data.spatial_ratio_actual = geo.spatial_ratio_actual;
+        data.max_center_distance = geo.max_center_distance;
+        const cm = stimulus.cluster_meta;
+        data.grid_left = cm ? cm.grid_left : null;
+        data.grid_right = cm ? cm.grid_right : null;
+        data.center_left_x = cm ? cm.center_left.x : null;
+        data.center_left_y = cm ? cm.center_left.y : null;
+        data.center_right_x = cm ? cm.center_right.x : null;
+        data.center_right_y = cm ? cm.center_right.y : null;
+        data.radius_left = cm ? cm.radius_left : null;
+        data.radius_right = cm ? cm.radius_right : null;
+        data.center_distance = cm ? cm.center_distance : null;
+        data.canvas_logical_width = CFG.CANVAS_WIDTH;
+        data.canvas_logical_height = CFG.CANVAS_HEIGHT;
+        data.canvas_displayed_width = width;
+        data.canvas_displayed_height = height;
+        data.dot_radius = CFG.DOT_RADIUS;
+        data.minimum_dot_distance = CFG.MIN_DISTANCE;
+        data.dot_positions = JSON.stringify(stimulus.dots.map(p => ({
+          x: Math.round(p.x * 10) / 10,
+          y: Math.round(p.y * 10) / 10,
+          cluster: p.cluster,
+          color: p.color,
+          grid_cell: p.grid_cell,
+          side: p.side
+        })));
+        trialResult = { estimate, correctAnswer: spec.n, timedOut: !responded };
+      }
+    };
+
+    const timeline = [makeFixationTrial(spec, phase), trial];
+    if (includeFeedback) {
+      timeline.push({
+        type: jsPsychHtmlKeyboardResponse,
+        stimulus: function () {
+          if (trialResult.timedOut) return `
+            <div class="experiment-text"><p>시간 안에 응답하지 못했습니다.</p>
+              <p>정답은 <strong>${trialResult.correctAnswer}</strong>개였습니다.</p></div>`;
+          return `<div class="experiment-text">
+            <p>응답: <strong>${trialResult.estimate}</strong>개</p>
+            <p>정답: <strong>${trialResult.correctAnswer}</strong>개</p></div>`;
+        },
+        choices: 'NO_KEYS', trial_duration: 1000,
+        data: { phase: 'practice_feedback' }
+      });
+    }
+    return { timeline };
+  }
+
+  const participantTrial = {
+    type: jsPsychSurveyHtmlForm,
+    preamble: `<div class="experiment-text"><h2>참가자 정보</h2>
+      <p>참가자 이름을 입력하세요.</p></div>`,
+    html: `<p><label>참가자 이름:
+      <input id="participant-name" name="participant_id" type="text" required maxlength="40" autocomplete="off">
+      </label></p>`,
+    autofocus: 'participant-name',
+    button_label: '계속',
+    data: { phase: 'participant_info' },
+    on_finish: function (data) {
+      participantId = String(data.response.participant_id).trim();
+      jsPsych.data.addProperties({
+        participant_id: participantId, session_id: sessionId,
+        experiment_version: EXPERIMENT_VERSION,
+        started_at_iso: startISO,
+        screen_width: window.screen.width, screen_height: window.screen.height,
+        viewport_width: window.innerWidth, viewport_height: window.innerHeight,
+        device_pixel_ratio: window.devicePixelRatio,
+        user_agent: navigator.userAgent
+      });
+    }
+  };
+
+  const instructionTrial = {
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="experiment-text"><h2>과제 안내</h2>
+      <p>화면에 여러 개의 점이 나타납니다.</p>
+      <p>점의 색과 관계없이 <strong>모든 점</strong>의 개수를 세어 주세요.</p>
+      <p>한눈에 알아본 점 개수를 숫자 키로 차례로 누르세요.<br>
+      예를 들어 3개, 4개, 3개로 보였다면 <kbd>3</kbd> <kbd>4</kbd> <kbd>3</kbd>을 누르면 프로그램이 내부적으로 합계를 계산합니다.</p>
+      <p>다 눌렀으면 <kbd>Enter</kbd>를 누르세요. 합계가 응답으로 제출됩니다.</p>
+      <p>잘못 눌렀으면 <kbd>Backspace</kbd>로 마지막 입력을 취소할 수 있습니다.</p>
+      <p>전체 점 개수는 <strong>8개부터 12개</strong> 사이입니다.</p>
+      <p><strong>점이 나타난 뒤 4초 안에 Enter까지 눌러야 합니다.</strong><br>
+      4초 전에 Enter를 누르면 즉시 다음 시행으로 넘어갑니다.</p>
+      <p>정확하고 빠르게 응답해 주세요.</p>
+      <p>먼저 <strong>4회의 연습</strong>을 진행합니다.</p>
+      <p>준비되면 스페이스바를 누르세요.</p></div>`,
+    choices: [' '], data: { phase: 'instructions' }
+  };
+
+  const timeline = [participantTrial, instructionTrial];
+  for (const spec of practiceSpecs) timeline.push(makeCountingNode(spec, 'practice', true));
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="experiment-text"><h2>연습이 끝났습니다.</h2>
+      <p>이제 본실험 <strong>480회</strong>를 시작합니다.</p>
+      <p>본실험에서는 정답을 알려주지 않습니다.</p>
+      <p>준비되면 스페이스바를 누르세요.</p></div>`,
+    choices: [' '], data: { phase: 'practice_end' }
+  });
+
+  blocks.forEach((block, index) => {
+    const number = index + 1;
+    timeline.push({
+      type: jsPsychHtmlKeyboardResponse,
+      stimulus: `<div class="experiment-text"><h2>Block ${number} / ${CFG.BLOCK_COUNT}</h2>
+        <p>${number === 1 ? '본실험을 시작합니다.' : '잠시 쉬어도 좋습니다. 준비되면 다음 block을 시작하세요.'}</p>
+        <p>이 block에는 ${CFG.TRIALS_PER_BLOCK}개의 trial이 있습니다.</p>
+        <p>준비되면 스페이스바를 누르세요.</p></div>`,
+      choices: [' '], data: { phase: 'block_start', block: number }
+    });
+    for (const spec of block) timeline.push(makeCountingNode(spec, 'main', false));
+  });
+
+  timeline.push({
+    type: jsPsychHtmlKeyboardResponse,
+    stimulus: `<div class="experiment-text"><h2>모든 시행이 끝났습니다.</h2>
+      <p>스페이스바를 누르면 데이터가 전송됩니다.</p>
+      <p>전송이 끝날 때까지 창을 닫지 마세요.</p></div>`,
+    choices: [' '], data: { phase: 'experiment_end' }
+  });
+
+  jsPsych.run(timeline);
+</script>
+</html>
