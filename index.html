@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+eksd<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -9,8 +9,9 @@
   <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@2.1.0"></script>
   <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet">
   <script>
-/* Groupitizing experiment - testable, browser-independent trial design and stimulus generation.
- * Use Math.random for spatial sampling; grid selections are independent uniform draws (no balancing).
+/* Groupitizing v3.0.0 - common uniform-point, hyperplane and centroid-pull generator.
+ * A/B partition is a counterbalanced nuisance factor, NOT a separately repeated condition.
+ * No 25px (or other) inter-dot center-distance constraint is imposed.
  */
 (function (root, factory) {
   const api = factory();
@@ -20,21 +21,20 @@
   'use strict';
 
   const CONFIG = Object.freeze({
-    VERSION: '2.0.0',
+    VERSION: '3.0.0',
     CANVAS_WIDTH: 960,
     CANVAS_HEIGHT: 540,
     DOT_RADIUS: 7,
-    MIN_DISTANCE: 25,
+    MIN_DISTANCE: 0, // 25px restriction removed; overlapping circles are possible.
     MARGIN: 20,
-    CLUSTER_RADIUS_MIN: 65,
-    CLUSTER_RADIUS_MAX: 135,
-    CLUSTER_BOUNDARY_GAP: 8,
     FIXATION_DURATION: 1000,
     RESPONSE_DEADLINE: 4000,
     ITI_DURATION: 300,
-    BLOCK_COUNT: 8,
-    TRIALS_PER_BLOCK: 60,
+    BLOCK_COUNT: 7,
+    TRIALS_PER_BLOCK: 45,
     PRACTICE_COUNT: 4,
+    SPATIAL_ANGLE_CANDIDATES: 180,
+    MAX_STIMULUS_ATTEMPTS: 500,
     COLORS: Object.freeze({
       GRAY: [128, 128, 128],
       RED: [255, 0, 0],
@@ -43,7 +43,8 @@
   });
 
   const N_VALUES = Object.freeze([8, 9, 10, 11, 12]);
-  const CONDITION_IDS = Object.freeze(['R1', 'R2', 'R3', 'C1', 'C2', 'C3']);
+  const S_PERCENT_VALUES = Object.freeze(Array.from({ length: 21 }, (_, i) => i * 3));
+  const CONDITION_IDS = Object.freeze(['C1', 'C2', 'C3']);
   const PARTITIONS = Object.freeze({
     8: [[3, 5], [4, 4]],
     9: [[3, 6], [4, 5]],
@@ -52,416 +53,216 @@
     12: [[5, 7], [6, 6]]
   });
 
-  const isClusterCondition = condition => condition.startsWith('C');
-  const isColorCondition = condition => !['R1', 'C1'].includes(condition);
-  const randomInt = (n, rng = Math.random) => Math.floor(rng() * n);
   const randomRange = (a, b, rng = Math.random) => a + (b - a) * rng();
   const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-  const sum = array => array.reduce((a, b) => a + b, 0);
+  const sum = xs => xs.reduce((a, b) => a + b, 0);
   const fmtPair = pair => pair ? pair.join('+') : '';
 
   function shuffle(items, rng = Math.random) {
     const out = items.slice();
     for (let i = out.length - 1; i > 0; i--) {
-      const j = randomInt(i + 1, rng);
+      const j = Math.floor(rng() * (i + 1));
       [out[i], out[j]] = [out[j], out[i]];
     }
     return out;
   }
 
-  // Exactly 2 trials of each condition × N per block, across 8 blocks.
-  // Each applicable spatial/color partition occurs 8 times per condition × N.
-  function buildMainBlocks(rng = Math.random) {
-    const blocks = Array.from({ length: CONFIG.BLOCK_COUNT }, () => []);
-    for (const n of N_VALUES) {
-      for (const condition of CONDITION_IDS) {
-        const slots = Array.from({ length: CONFIG.BLOCK_COUNT }, () => []);
-        for (let b = 0; b < CONFIG.BLOCK_COUNT; b++) {
-          for (let p = 0; p < 2; p++) {
-            slots[b].push({
-              spatial_partition_id: isClusterCondition(condition) ? p : null,
-              color_partition_id: isColorCondition(condition)
-                ? (condition === 'C3' ? 1 - p : p)
-                : null
-            });
-          }
-        }
-
-        const specs = [];
-        for (let b = 0; b < CONFIG.BLOCK_COUNT; b++) {
-          for (const slot of slots[b]) {
-            specs.push({
-              phase: 'main',
-              n,
-              condition,
-              block: b + 1,
-              spatial_partition_id: slot.spatial_partition_id,
-              color_partition_id: slot.color_partition_id
-            });
-          }
-        }
-
-        // C2/C3: within each 8-trial spatial partition, balance the 2×2
-        // side-assignment × red-cluster (color_variant) table to exactly 2
-        // trials per cell. This gives A-left 4:4, color variants 4:4, and
-        // red-dominant left/right 4:4 per partition (8:8 across 16 trials).
-        if (condition === 'C2' || condition === 'C3') {
-          for (let sp = 0; sp < 2; sp++) {
-            const group = shuffle(specs.filter(s => s.spatial_partition_id === sp), rng);
-            const dirs = shuffle([...'LLLLRRRR'], rng);
-            group.forEach((s, i) => { s.side_assignment = dirs[i] === 'L' ? 'A_left' : 'A_right'; });
-            const aLeft = shuffle(group.filter(s => s.side_assignment === 'A_left'), rng);
-            const aRight = shuffle(group.filter(s => s.side_assignment === 'A_right'), rng);
-            aLeft.forEach((s, i) => { s.color_variant = i < 2 ? 0 : 1; });
-            aRight.forEach((s, i) => { s.color_variant = i < 2 ? 0 : 1; });
-          }
-        } else {
-          // Keep independently shuffled spatial/color allocations for other conditions.
-          for (let sp = 0; sp < 2; sp++) {
-            const group = specs.filter(s => s.spatial_partition_id === sp);
-            if (group.length === 0) continue;
-            if (group.length % 2) throw new Error('Odd spatial partition count');
-            const directions = shuffle([
-              ...Array(group.length / 2).fill('A_left'),
-              ...Array(group.length / 2).fill('A_right')
-            ], rng);
-            group.forEach((s, i) => { s.side_assignment = directions[i]; });
-          }
-          for (let cp = 0; cp < 2; cp++) {
-            const group = specs.filter(s => s.color_partition_id === cp);
-            if (group.length === 0) continue;
-            if (group.length % 2) throw new Error('Odd color partition count');
-            const variants = shuffle([
-              ...Array(group.length / 2).fill(0),
-              ...Array(group.length / 2).fill(1)
-            ], rng);
-            group.forEach((s, i) => { s.color_variant = variants[i]; });
-          }
-        }
-
-        // Compute exact red and cyan counts from the already-balanced variants.
-        // In both C2 and C3 the dominant-red cluster is variant0 -> group A,
-        // variant1 -> group B (C3's ties are resolved this way below).
-        specs.forEach(s => {
-          if (s.color_partition_id === null) return;
-          s.red_count = PARTITIONS[n][s.color_partition_id][s.color_variant];
-          s.cyan_count = n - s.red_count;
-          if (condition === 'C2' || condition === 'C3') {
-            const redCluster = s.color_variant;
-            const leftCluster = s.side_assignment === 'A_left' ? 0 : 1;
-            s.red_on_left = redCluster === leftCluster;
-          }
-        });
-
-        // R2: cross color variant × red's left/right assignment evenly.
-        // Each color partition has 8 trials, 4 per color variant; each
-        // of the four variant × side cells appears exactly twice.
-        if (condition === 'R2') {
-          for (let cp = 0; cp < 2; cp++) {
-            const group = specs.filter(s => s.color_partition_id === cp);
-            const first = shuffle(group.filter(s => s.color_variant === 0), rng);
-            const second = shuffle(group.filter(s => s.color_variant === 1), rng);
-            first.forEach((s, i) => { s.red_on_left = i < 2; });
-            second.forEach((s, i) => { s.red_on_left = i < 2; });
-          }
-        }
-
-        specs.forEach(s => {
-          if (s.spatial_partition_id !== null) {
-            s.spatial_partition = PARTITIONS[n][s.spatial_partition_id].slice();
-          } else {
-            s.spatial_partition = null;
-          }
-          s.color_partition = s.color_partition_id !== null
-            ? PARTITIONS[n][s.color_partition_id].slice() : null;
-          blocks[s.block - 1].push(s);
-        });
-      }
+  function specFor(n, condition, sIndex, phase = 'main') {
+    const nIndex = N_VALUES.indexOf(n);
+    if (nIndex < 0 || !CONDITION_IDS.includes(condition) || sIndex < 0 || sIndex >= S_PERCENT_VALUES.length) {
+      throw new Error('Invalid trial specification');
     }
-
-    let trialNumber = 1;
-    return blocks.map((block, i) => shuffle(block, rng).map((s, j) => ({
-      ...s,
-      block: i + 1,
-      trial_in_block: j + 1,
-      main_trial_number: trialNumber++,
-      condition_repeat: null
-    })));
+    // Every n starts at A at S=0%, then B at S=3%, then A at S=6%...
+    const spatialId = sIndex % 2;
+    const colorId = condition === 'C1' ? null : (condition === 'C3' ? 1 - spatialId : spatialId);
+    const spatialPartition = PARTITIONS[n][spatialId].slice();
+    const colorPartition = colorId === null ? null : PARTITIONS[n][colorId].slice();
+    // Keep color reversals decoupled from the alternating spatial partition.
+    const colorVariant = condition === 'C1' ? null : (Math.floor(sIndex / 2) + nIndex) % 2;
+    const colorAxisSide = condition === 'C3' ? (((sIndex * 5 + nIndex * 3) % 21 < 11) ? 'low' : 'high') : null;
+    const redCount = colorPartition ? colorPartition[colorVariant] : 0;
+    return {
+      phase, n, condition,
+      s_index: sIndex, s_percent: S_PERCENT_VALUES[sIndex], s: S_PERCENT_VALUES[sIndex] / 100,
+      spatial_partition_id: spatialId, spatial_partition: spatialPartition,
+      color_partition_id: colorId, color_partition: colorPartition,
+      color_variant: colorVariant, color_axis_side: colorAxisSide,
+      red_count: redCount, cyan_count: colorPartition ? n - redCount : 0,
+      side_assignment: null, red_on_left: null
+    };
   }
 
-  // Practice: four representative examples, same generator and response deadline.
+  function chooseBlockSLevels(rng) {
+    // Each of seven blocks has one low, one middle, and one high S level.
+    // Shuffle the band assignments, while ensuring each block has 1 or 2 A levels.
+    const bands = [[0,1,2,3,4,5,6], [7,8,9,10,11,12,13], [14,15,16,17,18,19,20]];
+    for (let attempt = 0; attempt < 10000; attempt++) {
+      const shuffled = bands.map(b => shuffle(b, rng));
+      const groups = Array.from({ length: 7 }, (_, b) => shuffled.map(band => band[b]));
+      if (groups.every(group => {
+        const aCount = group.filter(i => i % 2 === 0).length;
+        return aCount === 1 || aCount === 2;
+      })) return groups;
+    }
+    // Stable fallback: low A/B alternates and middle/high compensate.
+    return [[0,7,14],[1,8,15],[2,9,16],[3,10,17],[4,11,18],[5,12,19],[6,13,20]];
+  }
+
+  function buildMainBlocks(rng = Math.random) {
+    const groupedLevels = chooseBlockSLevels(rng);
+    let trialNumber = 1;
+    return groupedLevels.map((levels, blockIndex) => {
+      const specs = [];
+      for (const sIndex of levels) {
+        for (const n of N_VALUES) {
+          for (const condition of CONDITION_IDS) specs.push(specFor(n, condition, sIndex));
+        }
+      }
+      return shuffle(specs, rng).map((s, index) => ({
+        ...s, block: blockIndex + 1, trial_in_block: index + 1,
+        main_trial_number: trialNumber++, condition_repeat: 1
+      }));
+    });
+  }
+
   function buildPracticeSpecs() {
     return [
-      { n: 8, condition: 'R1', spatial_partition_id: null, color_partition_id: null },
-      { n: 9, condition: 'R2', spatial_partition_id: null, color_partition_id: 1, color_variant: 0, red_count: 4, cyan_count: 5, red_on_left: true },
-      { n: 10, condition: 'C2', spatial_partition_id: 1, color_partition_id: 1, color_variant: 0, red_count: 5, cyan_count: 5, side_assignment: 'A_left', red_on_left: true },
-      { n: 12, condition: 'C3', spatial_partition_id: 0, color_partition_id: 1, color_variant: 0, red_count: 6, cyan_count: 6, side_assignment: 'A_right', red_on_left: false }
-    ].map((s, i) => ({
-      ...s,
-      phase: 'practice', block: 0, trial_in_block: i + 1, main_trial_number: null,
-      spatial_partition: s.spatial_partition_id === null ? null : PARTITIONS[s.n][s.spatial_partition_id].slice(),
-      color_partition: s.color_partition_id === null ? null : PARTITIONS[s.n][s.color_partition_id].slice()
-    }));
+      specFor(8, 'C1', 0, 'practice'),
+      specFor(9, 'C2', 7, 'practice'),
+      specFor(10, 'C3', 14, 'practice'),
+      specFor(12, 'C3', 20, 'practice')
+    ].map((s, i) => ({ ...s, block: 0, trial_in_block: i + 1, main_trial_number: null }));
   }
 
   function validateTrialSchedule(blocks) {
-    if (blocks.length !== CONFIG.BLOCK_COUNT ||
-        blocks.some(b => b.length !== CONFIG.TRIALS_PER_BLOCK)) {
-      throw new Error('Expected 8 × 60 trials');
-    }
+    if (blocks.length !== 7 || blocks.some(b => b.length !== 45)) throw new Error('Expected 7 x 45 trials');
     const rows = blocks.flat();
-    if (rows.length !== 480 || rows.some(s => !CONDITION_IDS.includes(s.condition))) {
-      throw new Error('Wrong trial count or unknown condition');
-    }
+    if (rows.length !== 315) throw new Error('Expected 315 main trials');
     for (const n of N_VALUES) {
       for (const condition of CONDITION_IDS) {
-        const group = rows.filter(s => s.n === n && s.condition === condition);
-        if (group.length !== 16) throw new Error(`Expected 16 repetitions for ${n}/${condition}`);
-        for (let b = 1; b <= CONFIG.BLOCK_COUNT; b++) {
-          if (group.filter(s => s.block === b).length !== 2) throw new Error('Unbalanced block');
+        const subset = rows.filter(s => s.n === n && s.condition === condition);
+        if (subset.length !== 21) throw new Error('Expected 21 S levels per n/condition');
+        for (let i = 0; i < 21; i++) {
+          const match = subset.filter(s => s.s_index === i);
+          if (match.length !== 1) throw new Error('Missing/duplicate S level');
+          const s = match[0];
+          if (s.spatial_partition_id !== i % 2) throw new Error('A/B alternation failed');
+          const cp = condition === 'C1' ? null : (condition === 'C3' ? 1 - i % 2 : i % 2);
+          if (s.color_partition_id !== cp) throw new Error('Incorrect color partition crossing');
+          if (s.s_percent !== i * 3) throw new Error('Incorrect S strength');
         }
-        for (let cp = 0; cp < 2; cp++) {
-          const sub = group.filter(s => s.color_partition_id === cp);
-          if (sub.length) {
-            if (sub.length !== 8 || sub.filter(s => s.color_variant === 0).length !== 4 ||
-                sub.filter(s => s.color_variant === 1).length !== 4) throw new Error('Color direction imbalance');
-          }
-        }
-        for (let sp = 0; sp < 2; sp++) {
-          const sub = group.filter(s => s.spatial_partition_id === sp);
-          if (sub.length && (sub.length !== 8 || sub.filter(s => s.side_assignment === 'A_left').length !== 4)) {
-            throw new Error('Spatial direction imbalance');
-          }
-        }
-        if (condition === 'C2' || condition === 'C3') {
-          if (group.filter(s => s.red_on_left).length !== 8) {
-            throw new Error('C2/C3 red-dominant left-right imbalance');
-          }
-          for (let sp = 0; sp < 2; sp++) {
-            const sub = group.filter(s => s.spatial_partition_id === sp);
-            if (sub.filter(s => s.red_on_left).length !== 4) {
-              throw new Error('Crossed spatial/color allocation imbalance');
-            }
-            for (const side of ['A_left', 'A_right']) {
-              for (let v = 0; v < 2; v++) {
-                const count = sub.filter(s => s.side_assignment === side && s.color_variant === v).length;
-                if (count !== 2) throw new Error('Side/color joint cell imbalance');
-              }
-            }
-          }
-        }
-        if (condition === 'R2') {
-          for (let cp = 0; cp < 2; cp++) {
-            const sub = group.filter(s => s.color_partition_id === cp);
-            if (sub.filter(s => s.red_on_left).length !== 4) {
-              throw new Error('R2 side imbalance');
-            }
-            for (let variant = 0; variant < 2; variant++) {
-              const joint = sub.filter(s => s.color_variant === variant && s.red_on_left).length;
-              if (joint !== 2) throw new Error('R2 side/color joint imbalance');
-            }
-          }
-        }
+        if (subset.filter(s => s.spatial_partition_id === 0).length !== 11) throw new Error('A/B imbalance');
       }
+    }
+    for (const block of blocks) {
+      const levels = [...new Set(block.map(s => s.s_index))];
+      if (levels.length !== 3) throw new Error('Each block must contain 3 S levels');
+      if (![0, 1, 2].every(band => levels.some(i => Math.floor(i / 7) === band))) {
+        throw new Error('Each block must include low, mid, high S');
+      }
+      if (levels.filter(i => i % 2 === 0).length < 1 || levels.filter(i => i % 2 === 0).length > 2) {
+        throw new Error('Block A/B imbalance');
+      }
+      for (const n of N_VALUES) if (block.filter(s => s.n === n).length !== 9) throw new Error('n per block imbalance');
+      for (const condition of CONDITION_IDS) if (block.filter(s => s.condition === condition).length !== 15) throw new Error('condition per block imbalance');
     }
     return true;
   }
 
-  function sampleUniform(n, rng) {
-    const points = [];
-    for (let i = 0; i < n; i++) {
-      let added = false;
-      for (let attempt = 0; attempt < 15000; attempt++) {
-        const candidate = {
-          x: randomRange(CONFIG.MARGIN + CONFIG.DOT_RADIUS,
-            CONFIG.CANVAS_WIDTH - CONFIG.MARGIN - CONFIG.DOT_RADIUS, rng),
-          y: randomRange(CONFIG.MARGIN + CONFIG.DOT_RADIUS,
-            CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - CONFIG.DOT_RADIUS, rng),
-          cluster: -1, grid_cell: null, side: null
-        };
-        if (points.every(q => distance(q, candidate) >= CONFIG.MIN_DISTANCE)) {
-          points.push(candidate);
-          added = true;
-          break;
-        }
-      }
-      if (!added) throw new Error('Cannot generate full-screen random points');
-    }
-    return { dots: points, cluster_meta: null };
+  function sampleUniform(n, rng = Math.random) {
+    const minX = CONFIG.MARGIN + CONFIG.DOT_RADIUS;
+    const maxX = CONFIG.CANVAS_WIDTH - CONFIG.MARGIN - CONFIG.DOT_RADIUS;
+    const minY = CONFIG.MARGIN + CONFIG.DOT_RADIUS;
+    const maxY = CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - CONFIG.DOT_RADIUS;
+    // Completely independent point samples: no pairwise minimum-distance check.
+    return Array.from({ length: n }, () => ({
+      x: randomRange(minX, maxX, rng), y: randomRange(minY, maxY, rng),
+      cluster: null, grid_cell: null, side: null
+    }));
   }
 
-  // One of the 4 cells (2x2 per half) is drawn independently and uniformly for each cluster.
-  // Keep sampled cell IDs fixed when resampling positions/radii.
-  function gridBounds(side, cell) {
-    const row = Math.floor(cell / 2);
-    const col = cell % 2;
-    const x0 = side === 'left' ? 0 : CONFIG.CANVAS_WIDTH / 2;
-    const cellW = CONFIG.CANVAS_WIDTH / 4;
-    const cellH = CONFIG.CANVAS_HEIGHT / 2;
+  function projection(p, normal) { return p.x * normal.x + p.y * normal.y; }
+
+  function selectSpatialPlane(points, targetFirstCount, rng) {
+    let best = null;
+    // Even angular coverage with per-trial random starting phase and jitter.
+    const angularStart = rng() * 2 * Math.PI;
+    for (let a = 0; a < CONFIG.SPATIAL_ANGLE_CANDIDATES; a++) {
+      const theta = angularStart + (a + rng()) * 2 * Math.PI / CONFIG.SPATIAL_ANGLE_CANDIDATES;
+      const normal = { x: Math.cos(theta), y: Math.sin(theta) };
+      const projections = points.map((p, i) => ({ index: i, value: projection(p, normal) }))
+        .sort((a, b) => a.value - b.value);
+      const left = projections[targetFirstCount - 1].value;
+      const right = projections[targetFirstCount].value;
+      const gap = right - left;
+      if (!best || gap > best.gap) {
+        best = {
+          theta: ((theta % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI),
+          normal, offset: (left + right) / 2, gap,
+          firstIndices: new Set(projections.slice(0, targetFirstCount).map(p => p.index))
+        };
+      }
+    }
+    return best;
+  }
+
+  function centroid(points) {
     return {
-      minX: x0 + col * cellW,
-      maxX: x0 + (col + 1) * cellW,
-      minY: row * cellH,
-      maxY: (row + 1) * cellH
+      x: sum(points.map(p => p.x)) / points.length,
+      y: sum(points.map(p => p.y)) / points.length
     };
   }
 
-  function sampleCenterInCell(side, cell, rng) {
-    const b = gridBounds(side, cell);
-    const pad = CONFIG.CLUSTER_RADIUS_MIN + CONFIG.CLUSTER_BOUNDARY_GAP + CONFIG.DOT_RADIUS;
-    const halfMin = side === 'left' ? 0 : CONFIG.CANVAS_WIDTH / 2;
-    const halfMax = side === 'left' ? CONFIG.CANVAS_WIDTH / 2 : CONFIG.CANVAS_WIDTH;
-    const minX = Math.max(b.minX, halfMin + CONFIG.MARGIN + pad);
-    const maxX = Math.min(b.maxX, halfMax - CONFIG.MARGIN - pad);
-    const minY = Math.max(b.minY, CONFIG.MARGIN + pad);
-    const maxY = Math.min(b.maxY, CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - pad);
-    if (minX > maxX || minY > maxY) throw new Error('Cluster center grid has no feasible region');
-    return { x: randomRange(minX, maxX, rng), y: randomRange(minY, maxY, rng) };
-  }
-
-  function maxRadiusAt(center, side) {
-    const w = CONFIG.CANVAS_WIDTH;
-    const h = CONFIG.CANVAS_HEIGHT;
-    const p = CONFIG.DOT_RADIUS + CONFIG.CLUSTER_BOUNDARY_GAP + CONFIG.MARGIN;
-    const halfMin = side === 'left' ? 0 : w / 2;
-    const halfMax = side === 'left' ? w / 2 : w;
-    return Math.min(CONFIG.CLUSTER_RADIUS_MAX,
-      center.x - halfMin - p, halfMax - center.x - p,
-      center.y - p, h - center.y - p);
-  }
-
-  function sampleClusterPoints(center, radius, count, cluster, side, gridCell, rng) {
-    const out = [];
-    for (let i = 0; i < count; i++) {
-      let found = false;
-      for (let attempt = 0; attempt < 10000; attempt++) {
-        const a = rng() * Math.PI * 2;
-        const r = radius * Math.sqrt(rng());
-        const p = {
-          x: center.x + r * Math.cos(a),
-          y: center.y + r * Math.sin(a),
-          cluster, side, grid_cell: gridCell + 1
-        };
-        if (out.every(q => distance(p, q) >= CONFIG.MIN_DISTANCE)) {
-          out.push(p);
-          found = true;
-          break;
-        }
-      }
-      if (!found) return null;
-    }
-    return out;
-  }
-
-  function sampleClusters(spec, rng) {
-    const cells = [randomInt(4, rng), randomInt(4, rng)]; // 0-based, independent 2x2 choices
-    for (let attempt = 0; attempt < 4000; attempt++) {
-      const leftCenter = sampleCenterInCell('left', cells[0], rng);
-      const rightCenter = sampleCenterInCell('right', cells[1], rng);
-      const d = distance(leftCenter, rightCenter);
-      const leftMax = maxRadiusAt(leftCenter, 'left');
-      const rightMax = maxRadiusAt(rightCenter, 'right');
-      if (leftMax < CONFIG.CLUSTER_RADIUS_MIN || rightMax < CONFIG.CLUSTER_RADIUS_MIN) continue;
-      // Each cluster's radius is bounded within its own half-screen.
-      // Therefore the two enclosing circles already have at least 70px separation;
-      // an additional inter-cluster gap check is redundant.
-      const leftRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, leftMax, rng);
-      const rightRadius = randomRange(CONFIG.CLUSTER_RADIUS_MIN, rightMax, rng);
-      const aLeft = spec.side_assignment === 'A_left';
-      const sizeLeft = spec.spatial_partition[aLeft ? 0 : 1];
-      const sizeRight = spec.spatial_partition[aLeft ? 1 : 0];
-      const leftDots = sampleClusterPoints(leftCenter, leftRadius, sizeLeft,
-        aLeft ? 0 : 1, 'left', cells[0], rng);
-      if (!leftDots) continue;
-      const rightDots = sampleClusterPoints(rightCenter, rightRadius, sizeRight,
-        aLeft ? 1 : 0, 'right', cells[1], rng);
-      if (!rightDots) continue;
-      // Enclosing circles guarantee inter-cluster separation; check anyway.
-      if (leftDots.some(a => rightDots.some(b => distance(a, b) < CONFIG.MIN_DISTANCE))) continue;
+  function makeSpatialGeometry(spec, rng) {
+    const original = sampleUniform(spec.n, rng);
+    const plane = selectSpatialPlane(original, spec.spatial_partition[0], rng);
+    const groups = [[], []];
+    original.forEach((p, i) => groups[plane.firstIndices.has(i) ? 0 : 1].push(p));
+    const centroids = groups.map(centroid);
+    const dots = original.map((p, i) => {
+      const group = plane.firstIndices.has(i) ? 0 : 1;
       return {
-        dots: leftDots.concat(rightDots),
-        cluster_meta: {
-          grid_left: cells[0] + 1,
-          grid_right: cells[1] + 1,
-          center_left: leftCenter,
-          center_right: rightCenter,
-          radius_left: leftRadius,
-          radius_right: rightRadius,
-          center_distance: d
-        }
+        x: (1 - spec.s) * p.x + spec.s * centroids[group].x,
+        y: (1 - spec.s) * p.y + spec.s * centroids[group].y,
+        original_x: p.x, original_y: p.y,
+        cluster: group, grid_cell: null,
+        side: projection(p, plane.normal) < plane.offset ? 'negative' : 'positive'
+      };
+    });
+    return { dots, original, plane, centroids };
+  }
+
+  function assignColors(spec, geom) {
+    const dots = geom.dots;
+    if (spec.condition === 'C1') {
+      return { labels: Array(dots.length).fill('gray'), colorPlane: null };
+    }
+    if (spec.condition === 'C2') {
+      return {
+        labels: dots.map(p => p.cluster === spec.color_variant ? 'red' : 'cyan'),
+        colorPlane: { ...geom.plane, kind: 'same_as_spatial' }
       };
     }
-    throw new Error(`Cannot place cluster centers inside fixed cells ${cells[0]+1},${cells[1]+1}`);
-  }
-
-  function assignColors(spec, dots, clusterMeta, rng) {
-    const n = dots.length;
-    const labels = Array(n).fill('gray');
-    if (!isColorCondition(spec.condition)) return labels;
-    const redCount = spec.red_count;
-    if (spec.condition === 'R2') {
-      const order = dots.map((_, i) => i).sort((a, b) => dots[a].x - dots[b].x);
-      const leftCount = spec.red_on_left ? redCount : n - redCount;
-      order.forEach((idx, rank) => { labels[idx] = rank < leftCount
-        ? (spec.red_on_left ? 'red' : 'cyan') : (spec.red_on_left ? 'cyan' : 'red'); });
-    } else if (spec.condition === 'R3') {
-      // Pure random color labels, excluding the two completely x-separated cases.
-      let found = false;
-      for (let attempt = 0; attempt < 500; attempt++) {
-        const indexes = shuffle(Array.from({ length: n }, (_, i) => i), rng);
-        labels.fill('cyan');
-        indexes.slice(0, redCount).forEach(i => { labels[i] = 'red'; });
-        const ordered = dots.map((_, i) => i).sort((a, b) => dots[a].x - dots[b].x);
-        const sequence = ordered.map(i => labels[i]);
-        const transitions = sequence.slice(1).filter((color, i) => color !== sequence[i]).length;
-        if (transitions >= 2) { found = true; break; }
+    if (spec.condition !== 'C3') throw new Error('Unknown color condition');
+    // The orthogonal COLOR boundary has a normal perpendicular to the
+    // spatial boundary's normal: its line is perpendicular to the spatial line.
+    const v = { x: -geom.plane.normal.y, y: geom.plane.normal.x };
+    const sorted = dots.map((p, index) => ({ index, value: projection(p, v) }))
+      .sort((a, b) => a.value - b.value);
+    const r = spec.red_count;
+    const redLow = spec.color_axis_side === 'low';
+    const k = redLow ? r : dots.length - r;
+    const threshold = (sorted[k - 1].value + sorted[k].value) / 2;
+    const redIndices = new Set((redLow ? sorted.slice(0, r) : sorted.slice(dots.length - r)).map(p => p.index));
+    return {
+      labels: dots.map((_, i) => redIndices.has(i) ? 'red' : 'cyan'),
+      colorPlane: {
+        theta: (geom.plane.theta + Math.PI / 2) % (2 * Math.PI),
+        normal: v, offset: threshold,
+        gap: sorted[k].value - sorted[k - 1].value,
+        kind: 'perpendicular'
       }
-      if (!found) throw new Error('Cannot make R3 mixed color labels');
-    } else if (spec.condition === 'C2') {
-      const [a, b] = spec.spatial_partition;
-      const redCluster = a === b ? spec.color_variant : (redCount === a ? 0 : 1);
-      dots.forEach((p, i) => { labels[i] = p.cluster === redCluster ? 'red' : 'cyan'; });
-    } else if (spec.condition === 'C3') {
-      // Find the monochrome-cluster assignment that requires exactly one flip.
-      const [a, b] = spec.spatial_partition;
-      const options = [a, b].map((size, k) => ({ cluster: k, flips: Math.abs(redCount - size) }));
-      const minimum = Math.min(...options.map(o => o.flips));
-      const candidates = options.filter(o => o.flips === minimum);
-      if (minimum !== 1) throw new Error('C3 must differ by exactly one dot');
-      // Keep the red-majority side balanced across the schedule.
-      // In ambiguous cases both choices require one color flip; choose the
-      // color_variant cluster rather than drawing it independently at random.
-      const redCluster = spec.color_variant;
-      if (!candidates.some(o => o.cluster === redCluster)) {
-        throw new Error('C3 red cluster incompatible with the color partition');
-      }
-      dots.forEach((p, i) => { labels[i] = p.cluster === redCluster ? 'red' : 'cyan'; });
-      const currentRed = labels.filter(c => c === 'red').length;
-      const changeFrom = currentRed < redCount ? 'cyan' : 'red';
-      const possible = dots.map((_, i) => i).filter(i => labels[i] === changeFrom);
-        // Choose the one mismatching point at the spatial boundary:
-        // among points of the cluster that must lose a color, select the
-        // point whose (x,y) position is closest to the OPPOSITE cluster center.
-        // Use Euclidean distance on both axes, not a random point.
-        if (!clusterMeta) throw new Error('C3 requires cluster centers');
-        const sourceCluster = dots[possible[0]].cluster;
-        if (!possible.every(i => dots[i].cluster === sourceCluster)) {
-          throw new Error('C3 flip candidates must belong to one cluster');
-        }
-        const otherCenter = dots[possible[0]].side === 'left'
-          ? clusterMeta.center_right : clusterMeta.center_left;
-        let closestIndex = possible[0];
-        for (const i of possible.slice(1)) {
-          if (distance(dots[i], otherCenter) < distance(dots[closestIndex], otherCenter)) {
-            closestIndex = i;
-          }
-        }
-        labels[closestIndex] = changeFrom === 'red' ? 'cyan' : 'red';
-    } else {
-      throw new Error(`Unknown condition ${spec.condition}`);
-    }
-    if (labels.filter(c => c === 'red').length !== redCount) throw new Error('Wrong red count');
-    return labels;
+    };
   }
 
   function meanNN(points) {
@@ -472,7 +273,7 @@
   function convexHullArea(points) {
     if (points.length < 3) return 0;
     const sorted = points.slice().sort((a, b) => a.x - b.x || a.y - b.y);
-    const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const cross = (o, a, b) => (a.x-o.x)*(b.y-o.y)-(a.y-o.y)*(b.x-o.x);
     function half(list) {
       const h = [];
       for (const p of list) {
@@ -482,63 +283,102 @@
       return h;
     }
     const hull = half(sorted).slice(0,-1).concat(half(sorted.slice().reverse()).slice(0,-1));
-    return Math.abs(hull.reduce((acc,p,i) => acc + p.x * hull[(i+1)%hull.length].y - p.y * hull[(i+1)%hull.length].x,0))/2;
+    return Math.abs(hull.reduce((acc,p,i) => acc+p.x*hull[(i+1)%hull.length].y-p.y*hull[(i+1)%hull.length].x,0))/2;
   }
 
   function generateStimulus(spec, rng = Math.random) {
-    const geometry = isClusterCondition(spec.condition) ? sampleClusters(spec, rng) : sampleUniform(spec.n, rng);
-    const labels = assignColors(spec, geometry.dots, geometry.cluster_meta, rng);
-    const dots = shuffle(geometry.dots.map((p, i) => ({ ...p, color: labels[i] })), rng);
-    const within = [0, 1].map(k => meanNN(dots.filter(p => p.cluster === k)));
-    const cross = isClusterCondition(spec.condition)
-      ? Math.min(...dots.filter(p => p.cluster === 0).flatMap(a =>
-        dots.filter(p => p.cluster === 1).map(b => distance(a,b)))) : null;
-    const ratio = isClusterCondition(spec.condition) ? cross / ((within[0] + within[1])/2) : null;
-    const spread = Math.max(...dots.map(p => Math.hypot(p.x - CONFIG.CANVAS_WIDTH/2, p.y - CONFIG.CANVAS_HEIGHT/2)));
-    return {
-      dots,
-      cluster_meta: geometry.cluster_meta,
-      geometry: {
-        hull_area: convexHullArea(dots),
-        mean_nn_all: meanNN(dots),
-        cross_cluster_min_distance: cross,
-        within_cluster_mean_nn: isClusterCondition(spec.condition) ? (within[0] + within[1])/2 : null,
-        spatial_ratio_actual: ratio,
-        max_center_distance: spread
-      }
-    };
+    for (let attempt = 1; attempt <= CONFIG.MAX_STIMULUS_ATTEMPTS; attempt++) {
+      const geom = makeSpatialGeometry(spec, rng);
+      const coloring = assignColors(spec, geom);
+      const dots = geom.dots.map((p, i) => ({ ...p, color: coloring.labels[i] }));
+      const mixedCount = [0,1].filter(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size === 2).length;
+      // C3 must genuinely cut across both spatial groups, not merely flip
+      // one point, which was the flaw in the previous C3 algorithm.
+      if (spec.condition === 'C3' && mixedCount !== 2) continue;
+      const within = [0,1].map(g => meanNN(dots.filter(p => p.cluster === g)));
+      const cross = Math.min(...dots.filter(p => p.cluster === 0).flatMap(a =>
+        dots.filter(p => p.cluster === 1).map(b => distance(a,b))));
+      const distances = dots.flatMap((p, i) => dots.slice(i+1).map(q => distance(p, q)));
+      const minDistance = Math.min(...distances);
+      const overlapPairs = distances.filter(d => d < CONFIG.DOT_RADIUS * 2).length;
+      const plane = geom.plane;
+      const colorPlane = coloring.colorPlane;
+      return {
+        dots: shuffle(dots, rng),
+        cluster_meta: {
+          spatial_plane_theta_rad: plane.theta,
+          spatial_plane_normal_x: plane.normal.x,
+          spatial_plane_normal_y: plane.normal.y,
+          spatial_plane_offset: plane.offset,
+          spatial_plane_projection_gap: plane.gap,
+          color_plane_theta_rad: colorPlane ? colorPlane.theta : null,
+          color_plane_normal_x: colorPlane ? colorPlane.normal.x : null,
+          color_plane_normal_y: colorPlane ? colorPlane.normal.y : null,
+          color_plane_offset: colorPlane ? colorPlane.offset : null,
+          color_plane_projection_gap: colorPlane ? colorPlane.gap : null,
+          centroid_a_x: geom.centroids[0].x,
+          centroid_a_y: geom.centroids[0].y,
+          centroid_b_x: geom.centroids[1].x,
+          centroid_b_y: geom.centroids[1].y,
+          stimulus_generation_attempts: attempt,
+          n_mixed_spatial_groups: mixedCount
+        },
+        geometry: {
+          hull_area: convexHullArea(dots),
+          mean_nn_all: meanNN(dots),
+          within_cluster_mean_nn: (within[0] + within[1]) / 2,
+          cross_cluster_min_distance: cross,
+          spatial_ratio_actual: cross / ((within[0] + within[1]) / 2),
+          max_center_distance: Math.max(...dots.map(p => Math.hypot(p.x-CONFIG.CANVAS_WIDTH/2, p.y-CONFIG.CANVAS_HEIGHT/2))),
+          min_pair_distance_actual: minDistance,
+          overlapping_pair_count: overlapPairs
+        }
+      };
+    }
+    throw new Error(`Could not generate a valid ${spec.condition} geometry after ${CONFIG.MAX_STIMULUS_ATTEMPTS} attempts`);
   }
 
   function validateStimulus(spec, stim) {
     const dots = stim.dots;
     if (dots.length !== spec.n) throw new Error('Wrong total dot count');
-    for (let i = 0; i < dots.length; i++) {
-      const p = dots[i];
-      if (p.x < CONFIG.MARGIN || p.x > CONFIG.CANVAS_WIDTH-CONFIG.MARGIN ||
-          p.y < CONFIG.MARGIN || p.y > CONFIG.CANVAS_HEIGHT-CONFIG.MARGIN) throw new Error('Out of canvas');
-      for (let j = 0; j < i; j++) if (distance(p,dots[j]) < CONFIG.MIN_DISTANCE-1e-7) throw new Error('Overlapping dots');
+    if (dots.some(p => p.x < CONFIG.MARGIN + CONFIG.DOT_RADIUS - 1e-6 ||
+      p.x > CONFIG.CANVAS_WIDTH - CONFIG.MARGIN - CONFIG.DOT_RADIUS + 1e-6 ||
+      p.y < CONFIG.MARGIN + CONFIG.DOT_RADIUS - 1e-6 ||
+      p.y > CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - CONFIG.DOT_RADIUS + 1e-6)) {
+      throw new Error('Dot outside safe canvas margin');
     }
-    if (isColorCondition(spec.condition)) {
-      if (dots.filter(p => p.color === 'red').length !== spec.red_count) throw new Error('Wrong red allocation');
-    } else if (dots.some(p => p.color !== 'gray')) throw new Error('Gray condition has colors');
-    if (isClusterCondition(spec.condition)) {
-      for (let k = 0; k < 2; k++) {
-        if (dots.filter(p => p.cluster === k).length !== spec.spatial_partition[k]) throw new Error('Wrong cluster size');
+    for (const g of [0,1]) {
+      if (dots.filter(p => p.cluster === g).length !== spec.spatial_partition[g]) throw new Error('Wrong spatial partition count');
+    }
+    if (spec.condition === 'C1') {
+      if (dots.some(p => p.color !== 'gray')) throw new Error('Gray condition contains colors');
+    } else {
+      if (dots.filter(p => p.color === 'red').length !== spec.red_count) throw new Error('Wrong red count');
+      if (dots.filter(p => p.color === 'cyan').length !== spec.cyan_count) throw new Error('Wrong cyan count');
+    }
+    if (spec.condition === 'C2') {
+      if ([0,1].some(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size !== 1)) {
+        throw new Error('C2 colors are not congruent');
       }
-      if (spec.condition === 'C2' && [0,1].some(k => new Set(dots.filter(p => p.cluster === k).map(p => p.color)).size !== 1)) throw new Error('C2 not aligned');
-      if (spec.condition === 'C3') {
-        const mixed = [0,1].filter(k => new Set(dots.filter(p => p.cluster === k).map(p => p.color)).size > 1);
-        if (mixed.length !== 1) throw new Error('C3 must have one mixed cluster');
+    }
+    if (spec.condition === 'C3' && [0,1].some(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size !== 2)) {
+      throw new Error('C3 must have two genuinely mixed spatial groups');
+    }
+    const plane = stim.cluster_meta;
+    for (const p of dots) {
+      const signed = p.x * plane.spatial_plane_normal_x + p.y * plane.spatial_plane_normal_y - plane.spatial_plane_offset;
+      if ((p.cluster === 0 && signed >= 1e-7) || (p.cluster === 1 && signed <= -1e-7)) {
+        throw new Error('Moved dot crossed its spatial separating plane');
       }
-    } else if (dots.some(p => p.cluster !== -1)) throw new Error('Random condition has clusters');
+    }
+    // Deliberately do NOT reject overlapping dots. Minimum center distance is no longer enforced.
     return true;
   }
 
-  return { CONFIG, N_VALUES, CONDITION_IDS, PARTITIONS, fmtPair, shuffle,
-    buildMainBlocks, buildPracticeSpecs, validateTrialSchedule,
+  return { CONFIG, N_VALUES, S_PERCENT_VALUES, CONDITION_IDS, PARTITIONS, fmtPair,
+    shuffle, specFor, buildMainBlocks, buildPracticeSpecs, validateTrialSchedule,
     generateStimulus, validateStimulus };
 });
-
 </script>
   <style>
     body { margin: 0; background: white; color: #111; }
@@ -558,7 +398,7 @@
 <body></body>
 <script>
   'use strict';
-  /* GitHub Pages용 브라우저 JavaScript 실험. 기존 jsPsych 8.3.0 스타일·전송 형식 유지. */
+  /* GitHub Pages용 브라우저 JavaScript 실험. 기존 jsPsych 8.3.0 응답·전송 형식 유지. */
   const core = GroupitizingCore;
   const CFG = core.CONFIG;
   const EXPERIMENT_VERSION = CFG.VERSION;
@@ -573,9 +413,15 @@
     'condition', 'n', 'total_dots', 'spatial_condition', 'color_condition',
     'spatial_partition_id', 'color_partition_id', 'spatial_partition', 'color_partition',
     'side_assignment', 'color_variant', 'red_count', 'cyan_count', 'red_on_left',
-    'grid_left', 'grid_right', 'center_left_x', 'center_left_y',
-    'center_right_x', 'center_right_y', 'radius_left', 'radius_right',
-    'center_distance', 'hull_area', 'mean_nn_all', 'within_cluster_mean_nn',
+    's_index', 's_percent', 's', 'color_axis_side',
+    'spatial_plane_theta_rad', 'spatial_plane_normal_x', 'spatial_plane_normal_y',
+    'spatial_plane_offset', 'spatial_plane_projection_gap',
+    'color_plane_theta_rad', 'color_plane_normal_x', 'color_plane_normal_y',
+    'color_plane_offset', 'color_plane_projection_gap',
+    'centroid_a_x', 'centroid_a_y', 'centroid_b_x', 'centroid_b_y',
+    'stimulus_generation_attempts', 'n_mixed_spatial_groups',
+    'min_pair_distance_actual', 'overlapping_pair_count',
+    'hull_area', 'mean_nn_all', 'within_cluster_mean_nn',
     'cross_cluster_min_distance', 'spatial_ratio_actual', 'max_center_distance',
     'estimate', 'responded', 'timed_out', 'correct', 'signed_error', 'absolute_error', 'rt',
     'chunks', 'n_chunks', 'chunk_times', 'first_chunk_rt', 'undo_count',
@@ -586,7 +432,7 @@
   ];
   const DOT_COLUMNS = [
     'phase', 'block', 'trial_in_block', 'main_trial_number', 'condition',
-    'dot_index', 'x', 'y', 'cluster', 'color', 'grid_cell', 'side'
+    'dot_index', 'x', 'y', 'initial_x', 'initial_y', 'cluster', 'color', 'grid_cell', 'side'
   ];
   const SESSION_KEYS = [
     'participant_id', 'session_id', 'experiment_version',
@@ -631,7 +477,7 @@
         dots.forEach((dot, i) => dotRows.push([
           cell(r.phase), cell(r.block), cell(r.trial_in_block),
           cell(r.main_trial_number), cell(r.condition), i + 1,
-          dot.x, dot.y, dot.cluster, dot.color, cell(dot.grid_cell), cell(dot.side)
+          dot.x, dot.y, dot.initial_x, dot.initial_y, dot.cluster, dot.color, cell(dot.grid_cell), cell(dot.side)
         ]));
       }
       const firstRow = jsPsych.data.get().values()[0] || {};
@@ -647,7 +493,11 @@
         ['canvas_width', CFG.CANVAS_WIDTH],
         ['canvas_height', CFG.CANVAS_HEIGHT],
         ['stimulus_duration_ms', CFG.RESPONSE_DEADLINE],
-        ['grid_sampling', 'independent_uniform_2x2_per_half_unbalanced'],
+        ['spatial_sampling', 'uniform_full_canvas_then_projection_max_gap_centroid_pull'],
+        ['s_levels_percent', core.S_PERCENT_VALUES.join(',')],
+        ['spatial_partition_schedule', 'A_at_0_then_alternate_AB_every_3_percent_all_n'],
+        ['minimum_center_distance_enforced', false],
+        ['c3_mixed_spatial_groups_required', 2],
         ['color_calibration', 'none_fixed_RGB'],
         ['finished_at_iso', new Date().toISOString()]
       );
@@ -776,9 +626,10 @@
         phase, block: spec.block, trial_in_block: spec.trial_in_block,
         main_trial_number: spec.main_trial_number || null,
         condition: spec.condition, n: spec.n, total_dots: spec.n,
-        spatial_condition: spec.condition.startsWith('C') ? 'clustered' : 'random_full_screen',
-        color_condition: ({ R1: 'gray', R2: 'separated', R3: 'random_mixed',
-          C1: 'gray', C2: 'congruent', C3: 'different_partition' })[spec.condition],
+        spatial_condition: 'hyperplane_centroid_pull',
+        color_condition: ({ C1: 'gray', C2: 'congruent', C3: 'orthogonal_incongruent' })[spec.condition],
+        s_index: spec.s_index, s_percent: spec.s_percent, s: spec.s,
+        color_axis_side: spec.color_axis_side,
         spatial_partition_id: spec.spatial_partition_id,
         color_partition_id: spec.color_partition_id,
         spatial_partition: core.fmtPair(spec.spatial_partition),
@@ -878,15 +729,16 @@
         data.spatial_ratio_actual = geo.spatial_ratio_actual;
         data.max_center_distance = geo.max_center_distance;
         const cm = stimulus.cluster_meta;
-        data.grid_left = cm ? cm.grid_left : null;
-        data.grid_right = cm ? cm.grid_right : null;
-        data.center_left_x = cm ? cm.center_left.x : null;
-        data.center_left_y = cm ? cm.center_left.y : null;
-        data.center_right_x = cm ? cm.center_right.x : null;
-        data.center_right_y = cm ? cm.center_right.y : null;
-        data.radius_left = cm ? cm.radius_left : null;
-        data.radius_right = cm ? cm.radius_right : null;
-        data.center_distance = cm ? cm.center_distance : null;
+        for (const key of [
+          'spatial_plane_theta_rad', 'spatial_plane_normal_x', 'spatial_plane_normal_y',
+          'spatial_plane_offset', 'spatial_plane_projection_gap',
+          'color_plane_theta_rad', 'color_plane_normal_x', 'color_plane_normal_y',
+          'color_plane_offset', 'color_plane_projection_gap',
+          'centroid_a_x', 'centroid_a_y', 'centroid_b_x', 'centroid_b_y',
+          'stimulus_generation_attempts', 'n_mixed_spatial_groups'
+        ]) data[key] = cm ? cm[key] : null;
+        data.min_pair_distance_actual = geo.min_pair_distance_actual;
+        data.overlapping_pair_count = geo.overlapping_pair_count;
         data.canvas_logical_width = CFG.CANVAS_WIDTH;
         data.canvas_logical_height = CFG.CANVAS_HEIGHT;
         data.canvas_displayed_width = width;
@@ -896,6 +748,8 @@
         data.dot_positions = JSON.stringify(stimulus.dots.map(p => ({
           x: Math.round(p.x * 10) / 10,
           y: Math.round(p.y * 10) / 10,
+          initial_x: Math.round(p.original_x * 10) / 10,
+          initial_y: Math.round(p.original_y * 10) / 10,
           cluster: p.cluster,
           color: p.color,
           grid_cell: p.grid_cell,
@@ -971,7 +825,7 @@
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `<div class="experiment-text"><h2>연습이 끝났습니다.</h2>
-      <p>이제 본실험 <strong>480회</strong>를 시작합니다.</p>
+      <p>이제 본실험 <strong>315회</strong>를 시작합니다.</p>
       <p>본실험에서는 정답을 알려주지 않습니다.</p>
       <p>준비되면 스페이스바를 누르세요.</p></div>`,
     choices: [' '], data: { phase: 'practice_end' }
