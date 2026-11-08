@@ -1,4 +1,4 @@
-eksd<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
   <meta charset="UTF-8">
@@ -11,7 +11,7 @@ eksd<!DOCTYPE html>
   <script>
 /* Groupitizing v3.0.0 - common uniform-point, hyperplane and centroid-pull generator.
  * A/B partition is a counterbalanced nuisance factor, NOT a separately repeated condition.
- * No 25px (or other) inter-dot center-distance constraint is imposed.
+ * Initial point centers must be at least 40px apart. No minimum distance is imposed after centroid movement.
  */
 (function (root, factory) {
   const api = factory();
@@ -25,7 +25,7 @@ eksd<!DOCTYPE html>
     CANVAS_WIDTH: 960,
     CANVAS_HEIGHT: 540,
     DOT_RADIUS: 7,
-    MIN_DISTANCE: 0, // 25px restriction removed; overlapping circles are possible.
+    MIN_DISTANCE: 40, // Initial point-center minimum distance only; post-movement overlaps remain possible.
     MARGIN: 20,
     FIXATION_DURATION: 1000,
     RESPONSE_DEADLINE: 4000,
@@ -174,11 +174,25 @@ eksd<!DOCTYPE html>
     const maxX = CONFIG.CANVAS_WIDTH - CONFIG.MARGIN - CONFIG.DOT_RADIUS;
     const minY = CONFIG.MARGIN + CONFIG.DOT_RADIUS;
     const maxY = CONFIG.CANVAS_HEIGHT - CONFIG.MARGIN - CONFIG.DOT_RADIUS;
-    // Completely independent point samples: no pairwise minimum-distance check.
-    return Array.from({ length: n }, () => ({
-      x: randomRange(minX, maxX, rng), y: randomRange(minY, maxY, rng),
-      cluster: null, grid_cell: null, side: null
-    }));
+    const points = [];
+    // Uniform candidate positions; reject any candidate within 40px of an existing point.
+    // This minimum applies only to the initial positions, before centroid movement.
+    for (let i = 0; i < n; i++) {
+      let accepted = false;
+      for (let attempt = 0; attempt < 10000; attempt++) {
+        const candidate = {
+          x: randomRange(minX, maxX, rng), y: randomRange(minY, maxY, rng),
+          cluster: null, grid_cell: null, side: null
+        };
+        if (points.every(p => distance(p, candidate) >= CONFIG.MIN_DISTANCE)) {
+          points.push(candidate);
+          accepted = true;
+          break;
+        }
+      }
+      if (!accepted) throw new Error('Could not place initial dots with the minimum 40px spacing');
+    }
+    return points;
   }
 
   function projection(p, normal) { return p.x * normal.x + p.y * normal.y; }
@@ -371,7 +385,7 @@ eksd<!DOCTYPE html>
         throw new Error('Moved dot crossed its spatial separating plane');
       }
     }
-    // Deliberately do NOT reject overlapping dots. Minimum center distance is no longer enforced.
+    // Deliberately do NOT reject overlapping final dots; 40px spacing is enforced only initially.
     return true;
   }
 
@@ -496,7 +510,8 @@ eksd<!DOCTYPE html>
         ['spatial_sampling', 'uniform_full_canvas_then_projection_max_gap_centroid_pull'],
         ['s_levels_percent', core.S_PERCENT_VALUES.join(',')],
         ['spatial_partition_schedule', 'A_at_0_then_alternate_AB_every_3_percent_all_n'],
-        ['minimum_center_distance_enforced', false],
+        ['minimum_center_distance_enforced', true],
+        ['minimum_distance_stage', 'initial_only'],
         ['c3_mixed_spatial_groups_required', 2],
         ['color_calibration', 'none_fixed_RGB'],
         ['finished_at_iso', new Date().toISOString()]
