@@ -9,9 +9,9 @@
   <script src="https://unpkg.com/@jspsych/plugin-survey-html-form@2.1.0"></script>
   <link href="https://unpkg.com/jspsych@8.3.0/css/jspsych.css" rel="stylesheet">
   <script>
-/* Groupitizing v3.0.0 - common uniform-point, hyperplane and centroid-pull generator.
- * A/B partition is a counterbalanced nuisance factor, NOT a separately repeated condition.
- * Initial point centers must be at least 40px apart. No minimum distance is imposed after centroid movement.
+/* Groupitizing v4.0.1 - 3 spatial strengths x 5 color conditions x 5 numerosities x 3 repeats.
+ * A/B spatial partition is a balanced nuisance factor, not a sixth independent condition.
+ * Initial point centers must be at least 40px apart; no post-movement distance minimum.
  */
 (function (root, factory) {
   const api = factory();
@@ -21,7 +21,7 @@
   'use strict';
 
   const CONFIG = Object.freeze({
-    VERSION: '3.0.0',
+    VERSION: '4.0.1',
     CANVAS_WIDTH: 960,
     CANVAS_HEIGHT: 540,
     DOT_RADIUS: 7,
@@ -30,21 +30,30 @@
     FIXATION_DURATION: 1000,
     RESPONSE_DEADLINE: 4000,
     ITI_DURATION: 300,
-    BLOCK_COUNT: 7,
-    TRIALS_PER_BLOCK: 45,
+    BLOCK_COUNT: 9,
+    TRIALS_PER_BLOCK: 25,
     PRACTICE_COUNT: 4,
     SPATIAL_ANGLE_CANDIDATES: 180,
     MAX_STIMULUS_ATTEMPTS: 500,
     COLORS: Object.freeze({
       GRAY: [128, 128, 128],
       RED: [255, 0, 0],
-      CYAN: [0, 255, 255]
+      CYAN: [0, 255, 255],
+      HALF_RED: [192, 64, 64],
+      HALF_CYAN: [64, 192, 192]
     })
   });
 
   const N_VALUES = Object.freeze([8, 9, 10, 11, 12]);
-  const S_PERCENT_VALUES = Object.freeze(Array.from({ length: 21 }, (_, i) => i * 3));
-  const CONDITION_IDS = Object.freeze(['C1', 'C2', 'C3']);
+  const S_PERCENT_VALUES = Object.freeze([0, 15.5, 40]);
+  const CONDITION_IDS = Object.freeze(['C0', 'C1', 'C2', 'C3', 'C4']);
+  const COLOR_CONDITIONS = Object.freeze({
+    C0: Object.freeze({ strengthPercent: 0, relation: 'gray' }),
+    C1: Object.freeze({ strengthPercent: 50, relation: 'congruent' }),
+    C2: Object.freeze({ strengthPercent: 50, relation: 'orthogonal_incongruent' }),
+    C3: Object.freeze({ strengthPercent: 100, relation: 'congruent' }),
+    C4: Object.freeze({ strengthPercent: 100, relation: 'orthogonal_incongruent' })
+  });
   const PARTITIONS = Object.freeze({
     8: [[3, 5], [4, 4]],
     9: [[3, 6], [4, 5]],
@@ -67,104 +76,236 @@
     return out;
   }
 
-  function specFor(n, condition, sIndex, phase = 'main') {
+  // Allocation of the A spatial partition for each (n, color) cell over 9 trials.
+  // Each (n, color, S) has one or two A trials out of its three repeats.
+  // Across all 225 main trials: A=113, B=112.
+  function targetSpatialACount(n, condition) {
+    if (condition === 'C0') return n % 2 === 0 ? 5 : 4;
+    if (n % 2 === 0) return condition === 'C2' || condition === 'C4' ? 5 : 4;
+    if (n === 9) return condition === 'C1' || condition === 'C3' ? 5 : 4;
+    return condition === 'C1' || condition === 'C3' ? 4 : 5;
+  }
+
+  function balancedSpatialPartitionId(nIndex, colorIndex, sIndex, repeatIndex) {
+    const n = N_VALUES[nIndex];
+    const condition = CONDITION_IDS[colorIndex];
+    const aTotal = targetSpatialACount(n, condition);
+    // Begin with one A per S level, and rotate the additional A repetitions.
+    const extraLevels = aTotal - 3;
+    const levelOrder = (sIndex - (nIndex + colorIndex) % 3 + 3) % 3;
+    const aAtLevel = 1 + (levelOrder < extraLevels ? 1 : 0);
+    const repeatOrder = (repeatIndex + sIndex + nIndex + colorIndex) % 3;
+    return repeatOrder < aAtLevel ? 0 : 1;
+  }
+
+  function specFor(n, condition, sIndex, repeatIndex = 0, phase = 'main') {
     const nIndex = N_VALUES.indexOf(n);
-    if (nIndex < 0 || !CONDITION_IDS.includes(condition) || sIndex < 0 || sIndex >= S_PERCENT_VALUES.length) {
+    const colorIndex = CONDITION_IDS.indexOf(condition);
+    if (nIndex < 0 || colorIndex < 0 || !Number.isInteger(sIndex) ||
+        sIndex < 0 || sIndex >= S_PERCENT_VALUES.length ||
+        !Number.isInteger(repeatIndex) || repeatIndex < 0 || repeatIndex > 2) {
       throw new Error('Invalid trial specification');
     }
-    // Every n starts at A at S=0%, then B at S=3%, then A at S=6%...
-    const spatialId = sIndex % 2;
-    const colorId = condition === 'C1' ? null : (condition === 'C3' ? 1 - spatialId : spatialId);
+    const colorInfo = COLOR_CONDITIONS[condition];
+    const spatialId = balancedSpatialPartitionId(nIndex, colorIndex, sIndex, repeatIndex);
+    const isGray = colorInfo.relation === 'gray';
+    const isIncongruent = colorInfo.relation === 'orthogonal_incongruent';
+    const colorId = isGray ? null : (isIncongruent ? 1 - spatialId : spatialId);
     const spatialPartition = PARTITIONS[n][spatialId].slice();
     const colorPartition = colorId === null ? null : PARTITIONS[n][colorId].slice();
-    // Keep color reversals decoupled from the alternating spatial partition.
-    const colorVariant = condition === 'C1' ? null : (Math.floor(sIndex / 2) + nIndex) % 2;
-    const colorAxisSide = condition === 'C3' ? (((sIndex * 5 + nIndex * 3) % 21 < 11) ? 'low' : 'high') : null;
+    // Counterbalance color assignments without always coupling them to A/B.
+    const colorVariant = isGray ? null : (Math.floor((repeatIndex + 1) / 2) + nIndex + sIndex) % 2;
+    const colorAxisSide = isIncongruent ?
+      ((Math.floor(repeatIndex / 2) + nIndex + colorIndex + sIndex) % 2 === 0 ? 'low' : 'high') : null;
     const redCount = colorPartition ? colorPartition[colorVariant] : 0;
     return {
       phase, n, condition,
+      combined_condition: `S${sIndex}${condition}`,
+      condition_repeat: repeatIndex + 1,
       s_index: sIndex, s_percent: S_PERCENT_VALUES[sIndex], s: S_PERCENT_VALUES[sIndex] / 100,
+      color_strength_percent: colorInfo.strengthPercent, color_relation: colorInfo.relation,
       spatial_partition_id: spatialId, spatial_partition: spatialPartition,
       color_partition_id: colorId, color_partition: colorPartition,
       color_variant: colorVariant, color_axis_side: colorAxisSide,
-      red_count: redCount, cyan_count: colorPartition ? n - redCount : 0,
-      side_assignment: null, red_on_left: null
+      red_count: redCount, cyan_count: colorPartition ? n - redCount : 0
     };
   }
 
-  function chooseBlockSLevels(rng) {
-    // Each of seven blocks has one low, one middle, and one high S level.
-    // Shuffle the band assignments, while ensuring each block has 1 or 2 A levels.
-    const bands = [[0,1,2,3,4,5,6], [7,8,9,10,11,12,13], [14,15,16,17,18,19,20]];
-    for (let attempt = 0; attempt < 10000; attempt++) {
-      const shuffled = bands.map(b => shuffle(b, rng));
-      const groups = Array.from({ length: 7 }, (_, b) => shuffled.map(band => band[b]));
-      if (groups.every(group => {
-        const aCount = group.filter(i => i % 2 === 0).length;
-        return aCount === 1 || aCount === 2;
-      })) return groups;
+  // Find a color-direction allocation respecting red/cyan targets while spreading
+  // assignments across spatial levels and repetitions. This changes only label
+  // direction; it does not change the existing incongruent geometry/rejection rule.
+  function balanceColorAssignments(specs, rng = Math.random) {
+    for (const n of N_VALUES) {
+      for (const condition of CONDITION_IDS.filter(id => id !== 'C0')) {
+        const group = specs.filter(spec => spec.n === n && spec.condition === condition);
+        const unequal = group.filter(spec => spec.color_partition[0] !== spec.color_partition[1]);
+        const redTarget = n % 2 === 0 ? 2 :
+          (n === 9 ? (condition === 'C1' || condition === 'C2' ? 5 : 4) :
+                     (condition === 'C1' || condition === 'C2' ? 4 : 5));
+        const redOnATarget = n % 2 === 0 ? 2 : ({
+          C1: n === 9 ? 3 : 2,
+          C2: n === 9 ? 3 : 2,
+          C3: 2,
+          C4: 2
+        })[condition];
+
+        const combos = [];
+        // At most 9 eligible trials; exhaustively find the most even allocation.
+        for (let mask = 0; mask < (1 << unequal.length); mask++) {
+          const chosen = unequal.filter((_, index) => (mask & (1 << index)) !== 0);
+          if (chosen.length !== redTarget ||
+              chosen.filter(spec => spec.color_partition_id === 0).length !== redOnATarget) continue;
+          const byS = [0, 1, 2].map(level => chosen.filter(spec => spec.s_index === level).length);
+          const byRepeat = [1, 2, 3].map(repeat =>
+            chosen.filter(spec => spec.condition_repeat === repeat).length);
+          const score = [...byS, ...byRepeat]
+            .reduce((sum, count) => sum + (count - redTarget / 3) ** 2, 0);
+          combos.push({ chosen, score });
+        }
+        if (!combos.length) throw new Error(`Unable to balance color assignment: n=${n}, ${condition}`);
+        const bestScore = Math.min(...combos.map(combo => combo.score));
+        const optimal = combos.filter(combo => combo.score < bestScore + 1e-9);
+        const redMajority = new Set(optimal[Math.floor(rng() * optimal.length)].chosen);
+        for (const spec of unequal) {
+          spec.color_variant = redMajority.has(spec) ? 1 : 0;
+        }
+        // On equal-size partitions, color_variant controls only orientation.
+        // Opposite condition parities give 30/30 variants across the 60 ties.
+        const tied = group.filter(spec => spec.color_partition[0] === spec.color_partition[1]);
+        tied.sort((a, b) => a.s_index - b.s_index || a.condition_repeat - b.condition_repeat);
+        const colorIndex = CONDITION_IDS.indexOf(condition);
+        tied.forEach((spec, index) => {
+          spec.color_variant = (index + colorIndex) % 2;
+        });
+        for (const spec of group) {
+          spec.red_count = spec.color_partition[spec.color_variant];
+          spec.cyan_count = spec.n - spec.red_count;
+        }
+      }
     }
-    // Stable fallback: low A/B alternates and middle/high compensate.
-    return [[0,7,14],[1,8,15],[2,9,16],[3,10,17],[4,11,18],[5,12,19],[6,13,20]];
   }
 
   function buildMainBlocks(rng = Math.random) {
-    const groupedLevels = chooseBlockSLevels(rng);
-    let trialNumber = 1;
-    return groupedLevels.map((levels, blockIndex) => {
+    // Every block has the 25 (n, color) combinations once.
+    // Each three-block cycle visits all S levels for every (n, color) pair.
+    const unshuffled = Array.from({ length: CONFIG.BLOCK_COUNT }, (_, blockIndex) => {
       const specs = [];
-      for (const sIndex of levels) {
-        for (const n of N_VALUES) {
-          for (const condition of CONDITION_IDS) specs.push(specFor(n, condition, sIndex));
+      const repeatIndex = Math.floor(blockIndex / 3);
+      for (let nIndex = 0; nIndex < N_VALUES.length; nIndex++) {
+        for (let colorIndex = 0; colorIndex < CONDITION_IDS.length; colorIndex++) {
+          const sIndex = (blockIndex % 3 + (nIndex + colorIndex) % 3) % 3;
+          specs.push(specFor(N_VALUES[nIndex], CONDITION_IDS[colorIndex], sIndex, repeatIndex));
         }
       }
-      return shuffle(specs, rng).map((s, index) => ({
-        ...s, block: blockIndex + 1, trial_in_block: index + 1,
-        main_trial_number: trialNumber++, condition_repeat: 1
-      }));
+      return specs;
     });
+    balanceColorAssignments(unshuffled.flat(), rng);
+    let trialNumber = 1;
+    return unshuffled.map((specs, blockIndex) =>
+      shuffle(specs, rng).map((spec, index) => ({
+        ...spec, block: blockIndex + 1, trial_in_block: index + 1,
+        main_trial_number: trialNumber++
+      })));
   }
 
   function buildPracticeSpecs() {
     return [
-      specFor(8, 'C1', 0, 'practice'),
-      specFor(9, 'C2', 7, 'practice'),
-      specFor(10, 'C3', 14, 'practice'),
-      specFor(12, 'C3', 20, 'practice')
-    ].map((s, i) => ({ ...s, block: 0, trial_in_block: i + 1, main_trial_number: null }));
+      specFor(8, 'C0', 0, 0, 'practice'),
+      specFor(9, 'C1', 1, 0, 'practice'),
+      specFor(10, 'C2', 2, 0, 'practice'),
+      specFor(12, 'C4', 1, 0, 'practice')
+    ].map((spec, index) => ({
+      ...spec, block: 0, trial_in_block: index + 1, main_trial_number: null
+    }));
   }
 
   function validateTrialSchedule(blocks) {
-    if (blocks.length !== 7 || blocks.some(b => b.length !== 45)) throw new Error('Expected 7 x 45 trials');
+    if (blocks.length !== CONFIG.BLOCK_COUNT ||
+        blocks.some(block => block.length !== CONFIG.TRIALS_PER_BLOCK)) {
+      throw new Error('Expected 9 blocks x 25 trials');
+    }
     const rows = blocks.flat();
-    if (rows.length !== 315) throw new Error('Expected 315 main trials');
+    if (rows.length !== 225) throw new Error('Expected 225 main trials');
+    const mainNumbers = rows.map(spec => spec.main_trial_number);
+    if (mainNumbers.some((value, index) => value !== index + 1)) {
+      throw new Error('Main trial number is not consecutive');
+    }
     for (const n of N_VALUES) {
+      if (rows.filter(spec => spec.n === n).length !== 45) throw new Error('n total imbalance');
       for (const condition of CONDITION_IDS) {
-        const subset = rows.filter(s => s.n === n && s.condition === condition);
-        if (subset.length !== 21) throw new Error('Expected 21 S levels per n/condition');
-        for (let i = 0; i < 21; i++) {
-          const match = subset.filter(s => s.s_index === i);
-          if (match.length !== 1) throw new Error('Missing/duplicate S level');
-          const s = match[0];
-          if (s.spatial_partition_id !== i % 2) throw new Error('A/B alternation failed');
-          const cp = condition === 'C1' ? null : (condition === 'C3' ? 1 - i % 2 : i % 2);
-          if (s.color_partition_id !== cp) throw new Error('Incorrect color partition crossing');
-          if (s.s_percent !== i * 3) throw new Error('Incorrect S strength');
+        const pair = rows.filter(spec => spec.n === n && spec.condition === condition);
+        if (pair.length !== 9) throw new Error('Expected 9 trials per (n,color)');
+        for (let sIndex = 0; sIndex < S_PERCENT_VALUES.length; sIndex++) {
+          const matches = pair.filter(spec => spec.s_index === sIndex);
+          if (matches.length !== 3) throw new Error('Expected 3 repeats per (n,color,S)');
+          if (matches.map(spec => spec.condition_repeat).sort().join(',') !== '1,2,3') {
+            throw new Error('Missing/duplicate repeat index');
+          }
+          const aCount = matches.filter(spec => spec.spatial_partition_id === 0).length;
+          if (aCount < 1 || aCount > 2) throw new Error('A/B 2:1 balancing failed');
+          for (const spec of matches) {
+            if (spec.s_percent !== S_PERCENT_VALUES[sIndex]) throw new Error('Wrong S strength');
+            const colorInfo = COLOR_CONDITIONS[condition];
+            if (spec.color_strength_percent !== colorInfo.strengthPercent ||
+                spec.color_relation !== colorInfo.relation) throw new Error('Wrong color condition');
+            const expectedPartition = colorInfo.relation === 'gray' ? null :
+              (colorInfo.relation === 'congruent' ? spec.spatial_partition_id : 1 - spec.spatial_partition_id);
+            if (spec.color_partition_id !== expectedPartition) throw new Error('Wrong color partition crossing');
+            if (spec.spatial_partition.join('+') !== PARTITIONS[n][spec.spatial_partition_id].join('+')) {
+              throw new Error('Wrong spatial partition');
+            }
+          }
         }
-        if (subset.filter(s => s.spatial_partition_id === 0).length !== 11) throw new Error('A/B imbalance');
       }
     }
+    const aTotal = rows.filter(spec => spec.spatial_partition_id === 0).length;
+    if (aTotal !== 113) throw new Error('Expected A/B partition balance of 113/112');
+    const chromatic = rows.filter(spec => spec.condition !== 'C0');
+    const majorities = {
+      red: chromatic.filter(spec => spec.red_count > spec.cyan_count).length,
+      cyan: chromatic.filter(spec => spec.red_count < spec.cyan_count).length,
+      tied: chromatic.filter(spec => spec.red_count === spec.cyan_count).length
+    };
+    if (majorities.red !== 60 || majorities.cyan !== 60 || majorities.tied !== 60) {
+      throw new Error('Color majorities must be 60 red / 60 cyan / 60 tied');
+    }
+    for (const n of N_VALUES) {
+      const coloredAtN = chromatic.filter(spec => spec.n === n);
+      const redN = coloredAtN.filter(spec => spec.red_count > spec.cyan_count).length;
+      const cyanN = coloredAtN.filter(spec => spec.red_count < spec.cyan_count).length;
+      if (redN !== cyanN) throw new Error(`Red/cyan imbalance for n=${n}`);
+    }
+    for (const condition of CONDITION_IDS.filter(id => id !== 'C0')) {
+      const byColor = chromatic.filter(spec => spec.condition === condition);
+      if (byColor.filter(spec => spec.red_count > spec.cyan_count).length !== 15 ||
+          byColor.filter(spec => spec.red_count < spec.cyan_count).length !== 15 ||
+          byColor.filter(spec => spec.red_count === spec.cyan_count).length !== 15) {
+        throw new Error(`Color-majority imbalance in ${condition}`);
+      }
+    }
+    const congruentA = chromatic.filter(spec => spec.color_relation === 'congruent' &&
+      spec.spatial_partition_id === 0);
+    if (congruentA.length !== 42 ||
+        congruentA.filter(spec => spec.color_variant === 1).length !== 21) {
+      throw new Error('Congruent A red-on-large balance failed');
+    }
     for (const block of blocks) {
-      const levels = [...new Set(block.map(s => s.s_index))];
-      if (levels.length !== 3) throw new Error('Each block must contain 3 S levels');
-      if (![0, 1, 2].every(band => levels.some(i => Math.floor(i / 7) === band))) {
-        throw new Error('Each block must include low, mid, high S');
+      for (const n of N_VALUES) if (block.filter(spec => spec.n === n).length !== 5) {
+        throw new Error('Numerosity must occur 5 times per block');
       }
-      if (levels.filter(i => i % 2 === 0).length < 1 || levels.filter(i => i % 2 === 0).length > 2) {
-        throw new Error('Block A/B imbalance');
+      for (const condition of CONDITION_IDS) if (block.filter(spec => spec.condition === condition).length !== 5) {
+        throw new Error('Color must occur 5 times per block');
       }
-      for (const n of N_VALUES) if (block.filter(s => s.n === n).length !== 9) throw new Error('n per block imbalance');
-      for (const condition of CONDITION_IDS) if (block.filter(s => s.condition === condition).length !== 15) throw new Error('condition per block imbalance');
+      for (const n of N_VALUES) for (const condition of CONDITION_IDS) {
+        if (block.filter(spec => spec.n === n && spec.condition === condition).length !== 1) {
+          throw new Error('Each block needs each (n,color) pair exactly once');
+        }
+      }
+      const spatialCounts = S_PERCENT_VALUES.map((_, index) =>
+        block.filter(spec => spec.s_index === index).length);
+      if (spatialCounts.slice().sort((a, b) => a - b).join(',') !== '8,8,9') {
+        throw new Error('Spatial levels must be 8/8/9 per block');
+      }
     }
     return true;
   }
@@ -182,7 +323,7 @@
       for (let attempt = 0; attempt < 10000; attempt++) {
         const candidate = {
           x: randomRange(minX, maxX, rng), y: randomRange(minY, maxY, rng),
-          cluster: null, grid_cell: null, side: null
+          cluster: null
         };
         if (points.every(p => distance(p, candidate) >= CONFIG.MIN_DISTANCE)) {
           points.push(candidate);
@@ -239,8 +380,7 @@
         x: (1 - spec.s) * p.x + spec.s * centroids[group].x,
         y: (1 - spec.s) * p.y + spec.s * centroids[group].y,
         original_x: p.x, original_y: p.y,
-        cluster: group, grid_cell: null,
-        side: projection(p, plane.normal) < plane.offset ? 'negative' : 'positive'
+        cluster: group
       };
     });
     return { dots, original, plane, centroids };
@@ -248,18 +388,17 @@
 
   function assignColors(spec, geom) {
     const dots = geom.dots;
-    if (spec.condition === 'C1') {
+    if (spec.color_relation === 'gray') {
       return { labels: Array(dots.length).fill('gray'), colorPlane: null };
     }
-    if (spec.condition === 'C2') {
+    if (spec.color_relation === 'congruent') {
       return {
         labels: dots.map(p => p.cluster === spec.color_variant ? 'red' : 'cyan'),
         colorPlane: { ...geom.plane, kind: 'same_as_spatial' }
       };
     }
-    if (spec.condition !== 'C3') throw new Error('Unknown color condition');
-    // The orthogonal COLOR boundary has a normal perpendicular to the
-    // spatial boundary's normal: its line is perpendicular to the spatial line.
+    if (spec.color_relation !== 'orthogonal_incongruent') throw new Error('Unknown color relation');
+    // Color boundary is perpendicular to the spatial boundary.
     const v = { x: -geom.plane.normal.y, y: geom.plane.normal.x };
     const sorted = dots.map((p, index) => ({ index, value: projection(p, v) }))
       .sort((a, b) => a.value - b.value);
@@ -267,9 +406,10 @@
     const redLow = spec.color_axis_side === 'low';
     const k = redLow ? r : dots.length - r;
     const threshold = (sorted[k - 1].value + sorted[k].value) / 2;
-    const redIndices = new Set((redLow ? sorted.slice(0, r) : sorted.slice(dots.length - r)).map(p => p.index));
+    const redIndices = new Set((redLow ? sorted.slice(0, r) : sorted.slice(dots.length - r))
+      .map(p => p.index));
     return {
-      labels: dots.map((_, i) => redIndices.has(i) ? 'red' : 'cyan'),
+      labels: dots.map((_, index) => redIndices.has(index) ? 'red' : 'cyan'),
       colorPlane: {
         theta: (geom.plane.theta + Math.PI / 2) % (2 * Math.PI),
         normal: v, offset: threshold,
@@ -277,6 +417,14 @@
         kind: 'perpendicular'
       }
     };
+  }
+
+  function rgbFor(spec, color) {
+    if (color === 'gray') return CONFIG.COLORS.GRAY.slice();
+    if (spec.color_strength_percent === 50) {
+      return (color === 'red' ? CONFIG.COLORS.HALF_RED : CONFIG.COLORS.HALF_CYAN).slice();
+    }
+    return (color === 'red' ? CONFIG.COLORS.RED : CONFIG.COLORS.CYAN).slice();
   }
 
   function meanNN(points) {
@@ -304,11 +452,12 @@
     for (let attempt = 1; attempt <= CONFIG.MAX_STIMULUS_ATTEMPTS; attempt++) {
       const geom = makeSpatialGeometry(spec, rng);
       const coloring = assignColors(spec, geom);
-      const dots = geom.dots.map((p, i) => ({ ...p, color: coloring.labels[i] }));
+      const dots = geom.dots.map((p, i) => ({
+        ...p, color: coloring.labels[i], rgb: rgbFor(spec, coloring.labels[i])
+      }));
       const mixedCount = [0,1].filter(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size === 2).length;
-      // C3 must genuinely cut across both spatial groups, not merely flip
-      // one point, which was the flaw in the previous C3 algorithm.
-      if (spec.condition === 'C3' && mixedCount !== 2) continue;
+      // The orthogonal-incongruent color partition must mix both spatial groups.
+      if (spec.color_relation === 'orthogonal_incongruent' && mixedCount !== 2) continue;
       const within = [0,1].map(g => meanNN(dots.filter(p => p.cluster === g)));
       const cross = Math.min(...dots.filter(p => p.cluster === 0).flatMap(a =>
         dots.filter(p => p.cluster === 1).map(b => distance(a,b))));
@@ -364,19 +513,22 @@
     for (const g of [0,1]) {
       if (dots.filter(p => p.cluster === g).length !== spec.spatial_partition[g]) throw new Error('Wrong spatial partition count');
     }
-    if (spec.condition === 'C1') {
+    if (spec.color_relation === 'gray') {
       if (dots.some(p => p.color !== 'gray')) throw new Error('Gray condition contains colors');
     } else {
       if (dots.filter(p => p.color === 'red').length !== spec.red_count) throw new Error('Wrong red count');
       if (dots.filter(p => p.color === 'cyan').length !== spec.cyan_count) throw new Error('Wrong cyan count');
     }
-    if (spec.condition === 'C2') {
+    if (spec.color_relation === 'congruent') {
       if ([0,1].some(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size !== 1)) {
-        throw new Error('C2 colors are not congruent');
+        throw new Error('Congruent condition (C1/C3) contains mixed colors in a spatial group');
       }
     }
-    if (spec.condition === 'C3' && [0,1].some(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size !== 2)) {
-      throw new Error('C3 must have two genuinely mixed spatial groups');
+    if (spec.color_relation === 'orthogonal_incongruent' && [0,1].some(g => new Set(dots.filter(p => p.cluster === g).map(p => p.color)).size !== 2)) {
+      throw new Error('Incongruent condition must have two mixed spatial groups');
+    }
+    if (dots.some(p => p.rgb.join(',') !== rgbFor(spec, p.color).join(','))) {
+      throw new Error('Actual RGB does not match color strength');
     }
     const plane = stim.cluster_meta;
     for (const p of dots) {
@@ -389,7 +541,7 @@
     return true;
   }
 
-  return { CONFIG, N_VALUES, S_PERCENT_VALUES, CONDITION_IDS, PARTITIONS, fmtPair,
+  return { CONFIG, N_VALUES, S_PERCENT_VALUES, CONDITION_IDS, COLOR_CONDITIONS, PARTITIONS, fmtPair,
     shuffle, specFor, buildMainBlocks, buildPracticeSpecs, validateTrialSchedule,
     generateStimulus, validateStimulus };
 });
@@ -424,10 +576,11 @@
 
   const TRIAL_COLUMNS = [
     'phase', 'block', 'trial_in_block', 'main_trial_number',
-    'condition', 'n', 'total_dots', 'spatial_condition', 'color_condition',
+    'condition', 'combined_condition', 'n', 'total_dots', 'spatial_condition', 'color_condition',
     'spatial_partition_id', 'color_partition_id', 'spatial_partition', 'color_partition',
-    'side_assignment', 'color_variant', 'red_count', 'cyan_count', 'red_on_left',
-    's_index', 's_percent', 's', 'color_axis_side',
+    'color_variant', 'red_count', 'cyan_count',
+    's_index', 's_percent', 's', 'condition_repeat', 'color_strength_percent', 'color_relation',
+    'color_axis_side',
     'spatial_plane_theta_rad', 'spatial_plane_normal_x', 'spatial_plane_normal_y',
     'spatial_plane_offset', 'spatial_plane_projection_gap',
     'color_plane_theta_rad', 'color_plane_normal_x', 'color_plane_normal_y',
@@ -445,8 +598,8 @@
     'canvas_displayed_height', 'dot_radius', 'minimum_dot_distance', 'time_elapsed'
   ];
   const DOT_COLUMNS = [
-    'phase', 'block', 'trial_in_block', 'main_trial_number', 'condition',
-    'dot_index', 'x', 'y', 'initial_x', 'initial_y', 'cluster', 'color', 'grid_cell', 'side'
+    'phase', 'block', 'trial_in_block', 'main_trial_number', 'condition', 'combined_condition',
+    'dot_index', 'x', 'y', 'initial_x', 'initial_y', 'cluster', 'color', 'rgb'
   ];
   const SESSION_KEYS = [
     'participant_id', 'session_id', 'experiment_version',
@@ -459,8 +612,9 @@
     if (typeof value === 'boolean') return value ? 1 : 0;
     return value;
   };
-  const safeFilename = value => String(value).trim()
-    .replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) || 'participant';
+  const safeFilename = value => String(value).trim().normalize('NFC')
+    .replace(/[^\p{L}\p{N}_-]/gu, '_')
+    .replace(/_+/g, '_').slice(0, 40) || 'participant';
   const randomId = (length = 12) => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const bytes = new Uint32Array(length);
@@ -490,8 +644,8 @@
         catch (error) { console.error('점 좌표 데이터 읽기 오류', error); dots = []; }
         dots.forEach((dot, i) => dotRows.push([
           cell(r.phase), cell(r.block), cell(r.trial_in_block),
-          cell(r.main_trial_number), cell(r.condition), i + 1,
-          dot.x, dot.y, dot.initial_x, dot.initial_y, dot.cluster, dot.color, cell(dot.grid_cell), cell(dot.side)
+          cell(r.main_trial_number), cell(r.condition), cell(r.combined_condition), i + 1,
+          dot.x, dot.y, dot.initial_x, dot.initial_y, dot.cluster, dot.color, JSON.stringify(dot.rgb)
         ]));
       }
       const firstRow = jsPsych.data.get().values()[0] || {};
@@ -509,10 +663,12 @@
         ['stimulus_duration_ms', CFG.RESPONSE_DEADLINE],
         ['spatial_sampling', 'uniform_full_canvas_then_projection_max_gap_centroid_pull'],
         ['s_levels_percent', core.S_PERCENT_VALUES.join(',')],
-        ['spatial_partition_schedule', 'A_at_0_then_alternate_AB_every_3_percent_all_n'],
+        ['spatial_partition_schedule', 'AB_counterbalanced_across_three_repeats_per_cell'],
+        ['color_conditions', core.CONDITION_IDS.map(id => `${id}:${core.COLOR_CONDITIONS[id].strengthPercent}%:${core.COLOR_CONDITIONS[id].relation}`).join(',')],
+        ['condition_repeats', 3],
         ['minimum_center_distance_enforced', true],
         ['minimum_distance_stage', 'initial_only'],
-        ['c3_mixed_spatial_groups_required', 2],
+        ['incongruent_mixed_spatial_groups_required', 2],
         ['color_calibration', 'none_fixed_RGB'],
         ['finished_at_iso', new Date().toISOString()]
       );
@@ -589,9 +745,8 @@
     const ctx = canvas.getContext('2d');
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, CFG.CANVAS_WIDTH, CFG.CANVAS_HEIGHT);
-    const palette = { gray: CFG.COLORS.GRAY, red: CFG.COLORS.RED, cyan: CFG.COLORS.CYAN };
     for (const p of stimulus.dots) {
-      const color = palette[p.color];
+      const color = p.rgb;
       ctx.fillStyle = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
       ctx.beginPath();
       ctx.arc(p.x, p.y, CFG.DOT_RADIUS, 0, Math.PI * 2);
@@ -640,24 +795,27 @@
       data: {
         phase, block: spec.block, trial_in_block: spec.trial_in_block,
         main_trial_number: spec.main_trial_number || null,
-        condition: spec.condition, n: spec.n, total_dots: spec.n,
+        condition: spec.condition, combined_condition: spec.combined_condition,
+        n: spec.n, total_dots: spec.n,
         spatial_condition: 'hyperplane_centroid_pull',
-        color_condition: ({ C1: 'gray', C2: 'congruent', C3: 'orthogonal_incongruent' })[spec.condition],
+        color_condition: `${spec.color_strength_percent}%_${spec.color_relation}`,
+        condition_repeat: spec.condition_repeat,
+        color_strength_percent: spec.color_strength_percent, color_relation: spec.color_relation,
         s_index: spec.s_index, s_percent: spec.s_percent, s: spec.s,
         color_axis_side: spec.color_axis_side,
         spatial_partition_id: spec.spatial_partition_id,
         color_partition_id: spec.color_partition_id,
         spatial_partition: core.fmtPair(spec.spatial_partition),
         color_partition: core.fmtPair(spec.color_partition),
-        side_assignment: spec.side_assignment || null,
         color_variant: spec.color_variant === undefined ? null : spec.color_variant,
         red_count: spec.red_count === undefined ? 0 : spec.red_count,
         cyan_count: spec.cyan_count === undefined ? 0 : spec.cyan_count,
-        red_on_left: spec.red_on_left === undefined ? null : spec.red_on_left,
         response_deadline_ms: CFG.RESPONSE_DEADLINE,
         color_gray_rgb: JSON.stringify(CFG.COLORS.GRAY),
-        color_red_rgb: JSON.stringify(CFG.COLORS.RED),
-        color_cyan_rgb: JSON.stringify(CFG.COLORS.CYAN)
+        color_red_rgb: JSON.stringify(spec.color_strength_percent === 0 ? CFG.COLORS.GRAY :
+          spec.color_strength_percent === 50 ? CFG.COLORS.HALF_RED : CFG.COLORS.RED),
+        color_cyan_rgb: JSON.stringify(spec.color_strength_percent === 0 ? CFG.COLORS.GRAY :
+          spec.color_strength_percent === 50 ? CFG.COLORS.HALF_CYAN : CFG.COLORS.CYAN)
       },
       on_load: function () {
         const canvas = document.getElementById(canvasId);
@@ -675,8 +833,8 @@
         }
 
         handler = function (event) {
-          const isDigit = /^[1-9]$/.test(event.key) ||
-            /^Numpad[1-9]$/.test(event.code);
+          const numpad = /^Numpad([1-9])$/.exec(event.code);
+          const isDigit = Boolean(numpad) || /^[1-9]$/.test(event.key);
           const isEnter = event.key === 'Enter' || event.code === 'NumpadEnter';
           if (isDigit || isEnter || event.key === 'Backspace' || event.key === ' ') {
             event.preventDefault();
@@ -685,7 +843,8 @@
           if (performance.now() - shownAt >= CFG.RESPONSE_DEADLINE) return;
 
           if (isDigit) {
-            const digit = Number(event.key);
+            // Numpad remains usable even when NumLock is off (key may be 'End', etc.).
+            const digit = numpad ? Number(numpad[1]) : Number(event.key);
             if (!Number.isInteger(digit) || digit < 1 || digit > 9) return;
             chunks.push(digit);
             chunkTimes.push(Math.round(performance.now() - shownAt));
@@ -767,8 +926,7 @@
           initial_y: Math.round(p.original_y * 10) / 10,
           cluster: p.cluster,
           color: p.color,
-          grid_cell: p.grid_cell,
-          side: p.side
+          rgb: p.rgb
         })));
         trialResult = { estimate, correctAnswer: spec.n, timedOut: !responded };
       }
@@ -840,7 +998,7 @@
   timeline.push({
     type: jsPsychHtmlKeyboardResponse,
     stimulus: `<div class="experiment-text"><h2>연습이 끝났습니다.</h2>
-      <p>이제 본실험 <strong>315회</strong>를 시작합니다.</p>
+      <p>이제 본실험 <strong>225회(9블록 × 25회)</strong>를 시작합니다.</p>
       <p>본실험에서는 정답을 알려주지 않습니다.</p>
       <p>준비되면 스페이스바를 누르세요.</p></div>`,
     choices: [' '], data: { phase: 'practice_end' }
